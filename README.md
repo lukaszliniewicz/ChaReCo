@@ -1,4 +1,4 @@
-# LLM Chat Repo Context
+# ChaReCo - Chat Repo Context
 
 A simple GUI and command line tool to assist with providing chat LLMs with context about code repositories without the need to copy and paste multipe files manually. It outputs the directory structure of a repository as well as all/selected non-binary files, concatenated and saved as a text file. Processing a lot of code through an API, especially for big proprietary models like Claude Sonnet or Opus (which are the most capable), can get very expensive very fast. The chat interface is much cheaper if one does it a lot. An integration with Github is not always possible and the models can't execute any code or browse the internet (at least Claude can't), which is when this may come in handy. 
 
