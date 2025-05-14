@@ -1,3 +1,0 @@
-PyQt6>=6.5.0
-dulwich>=0.21.0
-tiktoken>=0.5.0
