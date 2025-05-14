@@ -11,7 +11,7 @@ You can view a sample output from the [Pandrator](https://github.com/lukaszlinie
 >- It's meant to support manual copying and pasting into chat interfaces.
 >- Token counts are estimates and may vary between different LLMs.
 
-![image](preview.gif)
+![image](demonstration.gif)
 
 ## Features
 
