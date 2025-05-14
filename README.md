@@ -67,10 +67,9 @@ There are a few ways to get ChaReCo running:
      ```
    - Run the application:
      ```bash
-     python -m chareco
+     python run.py
      ```
-     (Or, from the project root: `python chareco/app.py`)
-
+     
 **Using the Application:**
 
 1.  Launch ChaReCo.
