@@ -9,6 +9,7 @@ You can view a sample output from the [Pandrator](https://github.com/lukaszlinie
 >[!Note]
 >- This tool does not provide direct integration with LLMs.
 >- It's meant to support manual copying and pasting into chat interfaces.
+>- It is not meant to replace an IDE but complement it with easy concatenation. 
 >- Token counts are estimates and may vary between different LLMs.
 
 ![image](demonstration.gif)
