@@ -30,6 +30,7 @@ You can view a sample output from the [Pandrator](https://github.com/lukaszlinie
 - Dynamically select/deselect individual files or entire folders in the tree view to customize the final output.
 - Estimate token counts for the generated output.
 - Improved performance with background processing for analysis and search.
+- Quickly access recent repositories and local folders from a history dropdown.
 - Copy output to clipboard or save to a text file.
 
 ## How to Use
@@ -74,7 +75,7 @@ There are a few ways to get ChaReCo running:
 **Using the Application:**
 
 1.  Launch ChaReCo.
-2.  Enter a Git repository URL (for private GitHub repos, you can provide a PAT) or select a local folder path.
+2.  Enter a Git repository URL (for private GitHub repos, you can provide a PAT) or select a local folder path. You can also use the "Load from History" button to quickly select a recent entry.
 3.  Configure analysis options:
     *   Toggle directory structure, file concatenation.
     *   Set filters for included/excluded file extensions.

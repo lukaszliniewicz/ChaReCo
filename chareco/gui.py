@@ -9,13 +9,13 @@ from PyQt6.QtWidgets import (
     QCheckBox, QTextEdit, QVBoxLayout, QHBoxLayout, QFileDialog, QTreeWidget,
     QTreeWidgetItem, QMessageBox, QSplitter, QProgressDialog, QTabWidget,
     QRadioButton, QButtonGroup, QFrame, QToolButton, QStyle, QProgressBar,
-    QScrollArea
+    QScrollArea, QComboBox, QMenu
 )
 from PyQt6.QtCore import (
-    Qt, QThread, pyqtSignal, QSize, QTimer, QRunnable, QThreadPool, QObject
+    Qt, QThread, pyqtSignal, QSize, QTimer, QRunnable, QThreadPool, QObject, QSettings
 )
 from PyQt6.QtGui import (
-    QTextCursor, QTextCharFormat, QColor, QIcon, QFont, QBrush, QTextDocument
+    QTextCursor, QTextCharFormat, QColor, QIcon, QFont, QBrush, QTextDocument, QAction
 )
 
 from chareco.core.analysis import AnalysisThread
@@ -81,6 +81,9 @@ class App(QMainWindow):
         self.search_progress_bar = None
         self.search_workers = []
         self.thread_pool = QThreadPool.globalInstance()
+        self.repo_history = []
+        self.local_history = []
+        self.settings = QSettings("ChaReCo", "ChaReCo")
         
         # Set maximum thread count (can be adjusted based on system)
         self.max_threads = max(4, multiprocessing.cpu_count())
@@ -88,6 +91,8 @@ class App(QMainWindow):
 
         # Setup dark theme
         self.setup_dark_theme()
+        
+        self.load_history()
         
         # Default settings
         self.only_show_structure = False  # Default is to show content
@@ -221,7 +226,7 @@ class App(QMainWindow):
                 margin: 0px;
             }
             QScrollBar::handle:vertical {
-                background: #555555;
+                background: #8E44AD;
                 border-radius: 0px;
                 min-height: 20px;
             }
@@ -235,7 +240,7 @@ class App(QMainWindow):
                 margin: 0px;
             }
             QScrollBar::handle:horizontal {
-                background: #555555;
+                background: #8E44AD;
                 border-radius: 0px;
                 min-width: 20px;
             }
@@ -361,8 +366,16 @@ class App(QMainWindow):
         self.repo_input_layout = QVBoxLayout(self.repo_input_widget)
         self.repo_input_layout.setContentsMargins(0, 0, 0, 0)
         self.repo_label = QLabel("Repository URL:")
+        self.repo_input_layout.addWidget(self.repo_label)
+
         self.repo_entry = QLineEdit()
         self.repo_entry.setPlaceholderText("Enter GitHub repo URL")
+        self.repo_input_layout.addWidget(self.repo_entry)
+
+        self.repo_history_button = QPushButton("Load from History")
+        self.repo_history_button.setToolTip("Select a repository from history")
+        self.repo_history_button.clicked.connect(self.show_repo_history_menu)
+        self.repo_input_layout.addWidget(self.repo_history_button)
 
         # Add checkbox for PAT
         self.use_pat_checkbox = QCheckBox("I would like to provide a private key")
@@ -382,8 +395,6 @@ class App(QMainWindow):
         self.pat_container_layout.addWidget(self.pat_label)
         self.pat_container_layout.addWidget(self.pat_entry)
 
-        self.repo_input_layout.addWidget(self.repo_label)
-        self.repo_input_layout.addWidget(self.repo_entry)
         self.repo_input_layout.addWidget(self.use_pat_checkbox)
         self.repo_input_layout.addWidget(self.pat_container)
 
@@ -393,15 +404,20 @@ class App(QMainWindow):
         self.local_input_layout.setContentsMargins(0, 0, 0, 0)
 
         self.local_path_label = QLabel("Local folder path:")
+        self.local_input_layout.addWidget(self.local_path_label)
+
         self.local_path_display = QLineEdit()
         self.local_path_display.setReadOnly(True)
         self.local_path_display.setPlaceholderText("No folder selected")
+        self.local_input_layout.addWidget(self.local_path_display)
+
+        self.local_history_button = QPushButton("Load from History")
+        self.local_history_button.setToolTip("Select a local folder from history")
+        self.local_history_button.clicked.connect(self.show_local_history_menu)
+        self.local_input_layout.addWidget(self.local_history_button)
 
         self.browse_button = QPushButton("Browse...")
         self.browse_button.clicked.connect(self.browse_local_folder)
-
-        self.local_input_layout.addWidget(self.local_path_label)
-        self.local_input_layout.addWidget(self.local_path_display)
         self.local_input_layout.addWidget(self.browse_button)
 
         # Add repository input to source container (default view)
@@ -572,6 +588,8 @@ class App(QMainWindow):
         self.file_tree.setColumnCount(1)
         self.file_tree.itemClicked.connect(self.on_tree_item_clicked)
         self.file_tree.itemChanged.connect(self.on_item_changed)  # Connect to the itemChanged signal
+        self.file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.file_tree.customContextMenuRequested.connect(self.show_tree_context_menu)
         self.file_tree.setMinimumWidth(250)
         self.file_tree.setAlternatingRowColors(True)
 
@@ -1098,6 +1116,38 @@ class App(QMainWindow):
             # Display just this file's content
             self.display_file_content(path)
 
+    def show_tree_context_menu(self, position):
+        item = self.file_tree.itemAt(position)
+        if item and item.childCount() == 0:  # It's a file
+            menu = QMenu(self)
+            copy_action = menu.addAction("Copy file content")
+            action = menu.exec(self.file_tree.mapToGlobal(position))
+            
+            if action == copy_action:
+                self.copy_file_content_from_tree(item)
+
+    def copy_file_content_from_tree(self, item):
+        path = self.get_item_path(item)
+        content = None
+        
+        if path in self.file_contents:
+            content = self.file_contents[path]
+        else:
+            alt_path = path.replace('\\', '/')
+            if alt_path in self.file_contents:
+                content = self.file_contents[alt_path]
+            else:
+                dot_path = os.path.join('.', path)
+                if dot_path in self.file_contents:
+                    content = self.file_contents[dot_path]
+
+        if content is not None:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(content)
+            self.show_toast_message(f"Content of {os.path.basename(path)} copied")
+        else:
+            self.show_message(f"Content not found for {path}")
+
     def get_item_path(self, item):
         """Get the full path of a tree item."""
         path = []
@@ -1247,6 +1297,81 @@ class App(QMainWindow):
             self.update_children_check_state(item, False)
         self._updating_items = False
 
+    def load_history(self):
+        """Load history from settings."""
+        self.repo_history = self.settings.value("repo_history", [], type=list)
+        self.local_history = self.settings.value("local_history", [], type=list)
+
+    def save_history(self):
+        """Save history to settings."""
+        self.settings.setValue("repo_history", self.repo_history)
+        self.settings.setValue("local_history", self.local_history)
+
+    def closeEvent(self, event):
+        """Handle window close event."""
+        self.save_history()
+        super().closeEvent(event)
+
+    def add_to_history(self, path, is_local):
+        """Add an item to the history, ensuring no duplicates and limiting size."""
+        if not path:
+            return
+            
+        history_list = self.local_history if is_local else self.repo_history
+        
+        if path in history_list:
+            history_list.remove(path)
+        
+        history_list.insert(0, path)
+        
+        # Limit history to 10 items
+        if len(history_list) > 10:
+            if is_local:
+                self.local_history = history_list[:10]
+            else:
+                self.repo_history = history_list[:10]
+
+    def show_repo_history_menu(self):
+        """Show a dropdown menu for repository history."""
+        if not self.repo_history:
+            return
+
+        menu = QMenu(self)
+        for repo_path in self.repo_history:
+            action = QAction(repo_path, self)
+            action.triggered.connect(lambda checked, path=repo_path: self.repo_entry.setText(path))
+            menu.addAction(action)
+
+        menu.exec(self.repo_history_button.mapToGlobal(self.repo_history_button.rect().bottomLeft()))
+
+    def show_local_history_menu(self):
+        """Show a dropdown menu for local folder history."""
+        if not self.local_history:
+            return
+
+        menu = QMenu(self)
+        for full_path in self.local_history:
+            folder_name = os.path.basename(full_path)
+            parent_dir = os.path.basename(os.path.dirname(full_path))
+            display_path = f"{parent_dir}/{folder_name}" if parent_dir else folder_name
+
+            action = QAction(display_path, self)
+            action.triggered.connect(lambda checked, path=full_path: self.set_local_folder_path(path))
+            menu.addAction(action)
+
+        menu.exec(self.local_history_button.mapToGlobal(self.local_history_button.rect().bottomLeft()))
+
+    def set_local_folder_path(self, full_path):
+        """Set the local folder path from a history selection."""
+        self.local_folder_path = full_path
+        
+        folder_name = os.path.basename(full_path)
+        parent_dir = os.path.basename(os.path.dirname(full_path))
+        display_path = f"{parent_dir}/{folder_name}" if parent_dir else folder_name
+
+        self.local_path_display.setToolTip(full_path)
+        self.local_path_display.setText(display_path)
+
     def analyze_source(self):
         # Determine whether to analyze a remote repo or local folder
         is_local = self.local_radio.isChecked()
@@ -1256,11 +1381,13 @@ class App(QMainWindow):
             if not source_path or not os.path.isdir(source_path):
                 self.show_error("Please select a valid local folder")
                 return
+            self.add_to_history(source_path, is_local=True)
         else:
             source_path = self.repo_entry.text()
             if not source_path:
                 self.show_error("Please enter a repository URL")
                 return
+            self.add_to_history(source_path, is_local=False)
 
         # Prepare arguments
         args = argparse.Namespace(

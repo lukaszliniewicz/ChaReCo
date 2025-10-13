@@ -88,7 +88,6 @@ class AnalysisThread(QThread):
         finally:
             if temp_dir:
                 logging.info("Cleaning up temporary directory")
-                time.sleep(1)
                 safe_remove(temp_dir)
 
 #

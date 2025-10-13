@@ -3,6 +3,7 @@ import shutil
 import logging
 import fnmatch
 import re
+import time
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -173,12 +174,24 @@ def safe_remove(path):
     def onerror(func, path, exc_info):
         logging.warning(f"Failed to remove {path}. Skipping.")
 
-    if os.path.isdir(path):
-        shutil.rmtree(path, onerror=onerror)
-    elif os.path.exists(path):
+    for i in range(3):
+        if not os.path.exists(path):
+            return
+        
         try:
-            os.remove(path)
+            if os.path.isdir(path):
+                shutil.rmtree(path, onerror=onerror)
+            else:
+                os.remove(path)
         except Exception as e:
-            logging.warning(f"Failed to remove file {path}: {str(e)}")
+            logging.warning(f"Attempt {i+1} to remove {path} failed: {e}")
+
+        if not os.path.exists(path):
+            return
+        
+        time.sleep(1)
+    
+    if os.path.exists(path):
+        logging.error(f"Failed to remove {path} after multiple attempts.")
 
 #
