@@ -123,7 +123,7 @@ def concatenate_files(path, exclude=None, include=None, ignore_git=True,
 
         for file in sorted(files):
             file_path = os.path.join(root, file)
-            rel_file_path = os.path.join(rel_path, file)
+            rel_file_path = os.path.normpath(os.path.join(rel_path, file))
             
             if should_exclude(rel_file_path, ignore_git, exclude_license, exclude_readme, exclude_folders):
                 continue
@@ -150,11 +150,11 @@ def concatenate_files(path, exclude=None, include=None, ignore_git=True,
 
             file_header = f"\n--{file}--\n"
             content.append(file_header)
-            file_positions[os.path.join(rel_path, file)] = current_position
+            file_positions[rel_file_path] = current_position
             current_position += len(file_header)
             content.append(file_content)
             
-            file_contents[os.path.join(rel_path, file)] = file_content
+            file_contents[rel_file_path] = file_content
             
             current_position += len(file_content)
 

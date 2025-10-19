@@ -1564,36 +1564,30 @@ class App(QMainWindow):
         self.tree_container.show()
 
     def copy_selected_files(self):
-        # Get the checked items from the tree
-        checked_items = self.get_checked_items()
+        # Get the checked file items from the tree
+        checked_files = self.get_checked_items()
 
-        if not checked_items:
+        if not checked_files:
             self.show_message("No files selected - please check items to copy")
             return
 
+        # Sort by path to ensure a consistent order
+        checked_files.sort(key=lambda x: os.path.join(*x[0]))
+
         copied_content = []
-
-        for path_parts, item_type in checked_items:
-            # Only process files, not directories
-            if item_type == "directory":
-                continue
-
+        for path_parts, _ in checked_files:
             # Construct the full path
-            if len(path_parts) > 1:
-                full_path = os.path.join(*path_parts)
-            else:
-                full_path = path_parts[0]
+            full_path = os.path.join(*path_parts)
 
             # Get the file content from our cached content
-            if full_path in self.file_contents:
-                file_content = self.file_contents[full_path]
-                copied_content.append(f"--{path_parts[-1]}--\n{file_content}")
-            else:
-                # Try with different separator format
-                alt_path = full_path.replace('\\', '/')
-                if alt_path in self.file_contents:
-                    file_content = self.file_contents[alt_path]
-                    copied_content.append(f"--{path_parts[-1]}--\n{file_content}")
+            content = self.file_contents.get(full_path)
+            if content is None:
+                # Try with different separator format as a fallback
+                alt_path = full_path.replace(os.sep, '/')
+                content = self.file_contents.get(alt_path)
+
+            if content is not None:
+                copied_content.append(f"--{path_parts[-1]}--\n{content}")
 
         if copied_content:
             full_content = "\n\n".join(copied_content)
@@ -1604,37 +1598,33 @@ class App(QMainWindow):
             self.show_message("No content found for selected files")
 
     def get_checked_items(self, parent_item=None):
-        checked_items = []
+        checked_files = []
 
         if parent_item is None:
             # Start from the root
             root = self.file_tree.invisibleRootItem()
             for i in range(root.childCount()):
-                checked_items.extend(self.get_checked_items(root.child(i)))
-        else:
-            # Process this item
-            if parent_item.checkState(0) == Qt.CheckState.Checked:
-                # Get the full path
+                checked_files.extend(self.get_checked_items(root.child(i)))
+            return checked_files
+
+        # This is a file if it has no children in the tree
+        is_file = parent_item.childCount() == 0
+        state = parent_item.checkState(0)
+
+        if is_file:
+            if state == Qt.CheckState.Checked:
                 path = []
                 current = parent_item
                 while current is not None and current.text(0) != "/":
                     path.insert(0, current.text(0))
                     current = current.parent()
-
-                if path:  # Avoid empty paths
-                    # Determine if it's a file or directory
-                    is_file = (parent_item.childCount() == 0 or '.' in path[-1])
-                    if is_file:
-                        checked_items.append((path, "file"))
-                    else:
-                        checked_items.append((path, "directory"))
-
-            # Process children
+                if path:
+                    checked_files.append((path, "file"))
+        else:  # It's a directory
             for i in range(parent_item.childCount()):
-                child_items = self.get_checked_items(parent_item.child(i))
-                checked_items.extend(child_items)
+                checked_files.extend(self.get_checked_items(parent_item.child(i)))
 
-        return checked_items
+        return checked_files
 
     def copy_text(self):
         clipboard = QApplication.clipboard()
