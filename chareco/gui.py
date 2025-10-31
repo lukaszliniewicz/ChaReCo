@@ -478,6 +478,10 @@ class App(QMainWindow):
         self.exclude_license_checkbox = QCheckBox("Exclude license")
         self.exclude_license_checkbox.setChecked(True)
         self.left_layout.addWidget(self.exclude_license_checkbox)
+
+        self.line_numbers_checkbox = QCheckBox("Add line numbers to copied files")
+        self.left_layout.addWidget(self.line_numbers_checkbox)
+
         self.left_layout.addSpacing(10)
 
         # Analyze button
@@ -548,6 +552,12 @@ class App(QMainWindow):
         self.tree_container = QWidget()
         self.tree_layout = QVBoxLayout(self.tree_container)
         self.tree_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Tree filter input
+        self.tree_filter_input = QLineEdit()
+        self.tree_filter_input.setPlaceholderText("Filter tree by name...")
+        self.tree_filter_input.textChanged.connect(self.filter_tree_widget)
+        self.tree_layout.addWidget(self.tree_filter_input)
 
         # Create tree toolbar with compact buttons
         self.tree_toolbar = QWidget()
@@ -694,6 +704,26 @@ class App(QMainWindow):
 
         # Set splitter proportions (25% tree, 75% text)
         self.splitter.setSizes([250, 750])
+
+    def filter_tree_widget(self, text):
+        """Filter the tree widget based on the search text."""
+        search_text = text.lower()
+        root = self.file_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            self._filter_tree_recursive(root.child(i), search_text)
+
+    def _filter_tree_recursive(self, item, search_text):
+        """Recursively filter tree items."""
+        child_matches = False
+        for i in range(item.childCount()):
+            if self._filter_tree_recursive(item.child(i), search_text):
+                child_matches = True
+
+        self_matches = search_text in item.text(0).lower()
+        should_be_visible = self_matches or child_matches
+        item.setHidden(not should_be_visible)
+
+        return should_be_visible
 
     def show_all_content(self):
         """Show all content in the text display."""
@@ -1142,6 +1172,18 @@ class App(QMainWindow):
                     content = self.file_contents[dot_path]
 
         if content is not None:
+            if self.line_numbers_checkbox.isChecked():
+                lines = content.splitlines()
+                numbered_lines = []
+                line_num = 1
+                for line in lines:
+                    if line.strip():
+                        numbered_lines.append(f"{line_num}: {line}")
+                        line_num += 1
+                    else:
+                        numbered_lines.append(line)
+                content = "\n".join(numbered_lines)
+
             clipboard = QApplication.clipboard()
             clipboard.setText(content)
             self.show_toast_message(f"Content of {os.path.basename(path)} copied")
@@ -1587,6 +1629,17 @@ class App(QMainWindow):
                 content = self.file_contents.get(alt_path)
 
             if content is not None:
+                if self.line_numbers_checkbox.isChecked():
+                    lines = content.splitlines()
+                    numbered_lines = []
+                    line_num = 1
+                    for line in lines:
+                        if line.strip():
+                            numbered_lines.append(f"{line_num}: {line}")
+                            line_num += 1
+                        else:
+                            numbered_lines.append(line)
+                    content = "\n".join(numbered_lines)
                 copied_content.append(f"--{path_parts[-1]}--\n{content}")
 
         if copied_content:
