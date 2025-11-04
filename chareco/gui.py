@@ -20,7 +20,7 @@ from PyQt6.QtGui import (
 
 from chareco.core.analysis import AnalysisThread
 from chareco.core.search import SearchWorker
-from chareco.core.utils import concatenate_folder_files
+from chareco.core.utils import concatenate_folder_files, convert_notebook_to_markdown
 
 class App(QMainWindow):
     def __init__(self):
@@ -28,6 +28,7 @@ class App(QMainWindow):
 
         # Main window configuration
         self.setWindowTitle("ChaReCo")
+        self.setAcceptDrops(True)
         
         # Create a size that works for most screens
         self.resize(1400, 900)
@@ -519,10 +520,13 @@ class App(QMainWindow):
             self.repo_input_widget.show()
             self.local_input_widget.hide()
             self.source_layout.addWidget(self.repo_input_widget)
+            self.only_structure_checkbox.setChecked(False)
+            self.only_structure_checkbox.setEnabled(False)
         else:
             self.repo_input_widget.hide()
             self.local_input_widget.show()
             self.source_layout.addWidget(self.local_input_widget)
+            self.only_structure_checkbox.setEnabled(True)
 
     def browse_local_folder(self):
         folder_path = QFileDialog.getExistingDirectory(
@@ -1134,6 +1138,32 @@ class App(QMainWindow):
         cursor.clearSelection()
         self.text_display.setTextCursor(cursor)
 
+    def _get_file_content(self, file_path):
+        content = self.file_contents.get(file_path)
+        if content is not None:
+            return content
+
+        if self.only_show_structure and self.local_folder_path:
+            abs_path = os.path.join(self.local_folder_path, file_path)
+            if os.path.exists(abs_path):
+                if file_path.endswith('.ipynb'):
+                    content = convert_notebook_to_markdown(abs_path)
+                else:
+                    try:
+                        with open(abs_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                    except UnicodeDecodeError:
+                        content = "[Binary file - content not displayed]"
+                        logging.warning(f"File with non-binary extension is binary: {abs_path}")
+                    except Exception as e:
+                        content = f"Error reading file {file_path}: {str(e)}"
+                        logging.error(f"Error reading file on demand: {abs_path} - {e}")
+
+                if content is not None:
+                    self.file_contents[file_path] = content
+                return content
+        return None
+
     def on_tree_item_clicked(self, item, column):
         # Get the full path of the clicked item
         path = self.get_item_path(item)
@@ -1158,18 +1188,7 @@ class App(QMainWindow):
 
     def copy_file_content_from_tree(self, item):
         path = self.get_item_path(item)
-        content = None
-        
-        if path in self.file_contents:
-            content = self.file_contents[path]
-        else:
-            alt_path = path.replace('\\', '/')
-            if alt_path in self.file_contents:
-                content = self.file_contents[alt_path]
-            else:
-                dot_path = os.path.join('.', path)
-                if dot_path in self.file_contents:
-                    content = self.file_contents[dot_path]
+        content = self._get_file_content(path)
 
         if content is not None:
             if self.line_numbers_checkbox.isChecked():
@@ -1206,43 +1225,42 @@ class App(QMainWindow):
 
     def display_folder_contents(self, folder_path):
         """Display concatenated contents of all files in a folder."""
-        # Clear the current display
         self.text_display.clear()
         
-        # Concatenate all files in this folder
-        concatenated = concatenate_folder_files(folder_path, self.file_contents)
+        concatenated_parts = []
         
-        # Set the text
-        self.text_display.setPlainText(concatenated)
-        
-        # Update counts
+        # In tree-only mode, we might need to load files on demand
+        files_to_process = self.file_positions.keys()
+
+        for file_path in sorted(files_to_process):
+            folder, filename = os.path.split(file_path)
+
+            correct_folder = folder
+            if folder_path == "" and folder == ".": # Root folder special case
+                correct_folder = ""
+
+            if correct_folder == folder_path:
+                content = self._get_file_content(file_path)
+                if content:
+                    concatenated_parts.append(f"\n--{filename}--\n{content}")
+
+        if concatenated_parts:
+            self.text_display.setPlainText("\n".join(concatenated_parts).lstrip())
+        else:
+            self.text_display.setPlainText("No text files in this folder.")
+
         self.update_counts()
 
     def display_file_content(self, file_path):
         """Display a single file's content."""
-        # Check if we have this file in our contents
-        if file_path in self.file_contents:
-            self.text_display.clear()
-            self.text_display.setPlainText(self.file_contents[file_path])
-            self.update_counts()
+        content = self._get_file_content(file_path)
+        
+        self.text_display.clear()
+        if content is not None:
+            self.text_display.setPlainText(content)
         else:
-            # Try to find it with different separator format
-            alt_path = file_path.replace('\\', '/')
-            
-            # Try with dot prefix for root files
-            dot_path = os.path.join('.', file_path)
-            
-            if alt_path in self.file_contents:
-                self.text_display.clear()
-                self.text_display.setPlainText(self.file_contents[alt_path])
-                self.update_counts()
-            elif dot_path in self.file_contents:
-                self.text_display.clear()
-                self.text_display.setPlainText(self.file_contents[dot_path])
-                self.update_counts()
-            else:
-                self.text_display.clear()
-                self.text_display.setPlainText(f"File content not found for {file_path}")
+            self.text_display.setPlainText(f"File content not found for {file_path}")
+        self.update_counts()
 
     def on_item_changed(self, item, column):
         # Ensure we're not triggering recursive updates
@@ -1504,8 +1522,13 @@ class App(QMainWindow):
             self.folder_structure = folder_structure_section.replace("Folder structure:\n", "").strip()
 
         # Update UI
-        self.text_display.clear()
-        self.text_display.setPlainText(content)
+        if self.only_show_structure:
+            self.text_display.clear()
+            self.text_display.setPlainText("Select a file or folder from the tree to view its content.")
+        else:
+            self.text_display.clear()
+            self.text_display.setPlainText(content)
+        
         self.update_counts()
 
         # Store file contents for faster access
@@ -1621,12 +1644,8 @@ class App(QMainWindow):
             # Construct the full path
             full_path = os.path.join(*path_parts)
 
-            # Get the file content from our cached content
-            content = self.file_contents.get(full_path)
-            if content is None:
-                # Try with different separator format as a fallback
-                alt_path = full_path.replace(os.sep, '/')
-                content = self.file_contents.get(alt_path)
+            # Get the file content, loading on-demand if necessary
+            content = self._get_file_content(full_path)
 
             if content is not None:
                 if self.line_numbers_checkbox.isChecked():
@@ -1794,5 +1813,21 @@ class App(QMainWindow):
         token_count = self.count_tokens(text)
         self.char_count_label.setText(f"Characters: {char_count}")
         self.token_count_label.setText(f"Tokens: {token_count}")
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls:
+                path = urls[0].toLocalFile()
+                if os.path.isdir(path):
+                    self.local_radio.setChecked(True)
+                    self.set_local_folder_path(path)
+                    self.analyze_source()
 
 #

@@ -62,21 +62,26 @@ class AnalysisThread(QThread):
             )
 
             content = f"Folder structure:\n{structure}\n"
-            file_positions = {}
-            file_contents = {}
+            
+            # For remote repos, we must read files since the temp dir will be deleted.
+            should_read_files = self.args.concatenate
+            if not self.is_local:
+                should_read_files = True
 
-            if self.args.concatenate:
-                self.progress_signal.emit("Concatenating file contents...", 75)
-                logging.info("Concatenating file contents")
-                concat_content, file_positions, file_contents = concatenate_files(
-                    folder_path,
-                    self.args.exclude,
-                    self.args.include,
-                    not self.args.include_git,
-                    not self.args.include_license,
-                    self.args.exclude_readme,
-                    self.args.exclude_folders
-                )
+            self.progress_signal.emit("Scanning files...", 75)
+            logging.info("Scanning files...")
+            concat_content, file_positions, file_contents = concatenate_files(
+                folder_path,
+                self.args.exclude,
+                self.args.include,
+                not self.args.include_git,
+                not self.args.include_license,
+                self.args.exclude_readme,
+                self.args.exclude_folders,
+                read_files=should_read_files
+            )
+
+            if should_read_files:
                 content += f"\nConcatenated content:\n{concat_content}"
 
             self.progress_signal.emit("Finalizing results...", 90)
