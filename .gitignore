@@ -1,3 +1,25 @@
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# PyInstaller
+*.spec
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+
+# IDE configuration
+.idea/
+.vscode/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
