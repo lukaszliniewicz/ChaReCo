@@ -47,7 +47,6 @@ class App(QMainWindow):
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll_area.setFixedWidth(300)
         
         self.left_panel = QWidget()
         self.left_layout = QVBoxLayout(self.left_panel)
@@ -62,8 +61,8 @@ class App(QMainWindow):
         self.right_layout.setContentsMargins(0, 0, 0, 0)
 
         # Add panels to main layout
-        self.main_layout.addWidget(self.scroll_area)
-        self.main_layout.addWidget(self.right_panel)
+        self.main_layout.addWidget(self.scroll_area, 0)
+        self.main_layout.addWidget(self.right_panel, 1)
 
         # Setup the left panel contents
         self.setup_left_panel()
@@ -223,7 +222,7 @@ class App(QMainWindow):
             QScrollBar:vertical {
                 border: none;
                 background: #2b2b2b;
-                width: 12px;
+                width: 8px;
                 margin: 0px;
             }
             QScrollBar::handle:vertical {
@@ -237,7 +236,7 @@ class App(QMainWindow):
             QScrollBar:horizontal {
                 border: none;
                 background: #2b2b2b;
-                height: 12px;
+                height: 8px;
                 margin: 0px;
             }
             QScrollBar::handle:horizontal {
@@ -421,6 +420,9 @@ class App(QMainWindow):
         self.browse_button.clicked.connect(self.browse_local_folder)
         self.local_input_layout.addWidget(self.browse_button)
 
+        self.copy_local_folder_checkbox = QCheckBox("Copy local folder to temporary location (safer)")
+        self.local_input_layout.addWidget(self.copy_local_folder_checkbox)
+
         # Add repository input to source container (default view)
         self.source_layout.addWidget(self.repo_input_widget)
         self.local_input_widget.hide()  # Initially hide the local input widget
@@ -433,20 +435,70 @@ class App(QMainWindow):
         self.left_layout.addWidget(separator2)
         self.left_layout.addSpacing(5)
 
-        # Options section
-        self.options_label = QLabel("Options:")
+        # Analysis Options section
+        self.options_label = QLabel("Analysis Options:")
         self.options_label.setStyleSheet("font-weight: bold; font-size: 16px;")
         self.left_layout.addWidget(self.options_label)
         self.left_layout.addSpacing(5)
 
-        # Display options
         self.only_structure_checkbox = QCheckBox("Only show structure, don't concatenate")
         self.only_structure_checkbox.toggled.connect(self.toggle_structure_only)
         self.left_layout.addWidget(self.only_structure_checkbox)
+
+        self.line_numbers_checkbox = QCheckBox("Add line numbers to copied files")
+        self.left_layout.addWidget(self.line_numbers_checkbox)
+        self.left_layout.addSpacing(5)
+
+        # Separator
+        separator3 = QFrame()
+        separator3.setFrameShape(QFrame.Shape.HLine)
+        self.left_layout.addWidget(separator3)
+        self.left_layout.addSpacing(5)
+
+        # Include Rules section
+        self.rules_label = QLabel("Include Rules:")
+        self.rules_label.setStyleSheet("font-weight: bold; font-size: 16px;")
+        self.left_layout.addWidget(self.rules_label)
+        self.left_layout.addSpacing(5)
+        
+        self.ignore_git_checkbox = QCheckBox("Ignore .git related files")
+        self.ignore_git_checkbox.setChecked(True)
+        self.left_layout.addWidget(self.ignore_git_checkbox)
+
+        self.ignore_readme_checkbox = QCheckBox("Ignore README files")
+        self.left_layout.addWidget(self.ignore_readme_checkbox)
+
+        self.ignore_license_checkbox = QCheckBox("Ignore LICENSE files")
+        self.ignore_license_checkbox.setChecked(True)
+        self.left_layout.addWidget(self.ignore_license_checkbox)
+
+        self.ignore_pycache_checkbox = QCheckBox("Ignore Python cache (__pycache__, *.pyc)")
+        self.ignore_pycache_checkbox.setChecked(True)
+        self.left_layout.addWidget(self.ignore_pycache_checkbox)
+
+        self.ignore_node_modules_checkbox = QCheckBox("Ignore node_modules")
+        self.ignore_node_modules_checkbox.setChecked(True)
+        self.left_layout.addWidget(self.ignore_node_modules_checkbox)
+
+        self.ignore_lock_files_checkbox = QCheckBox("Ignore package lock files (e.g. package-lock.json)")
+        self.ignore_lock_files_checkbox.setChecked(True)
+        self.left_layout.addWidget(self.ignore_lock_files_checkbox)
+
+        self.ignore_build_checkbox = QCheckBox("Ignore build outputs (build/, dist/)")
+        self.ignore_build_checkbox.setChecked(True)
+        self.left_layout.addWidget(self.ignore_build_checkbox)
+
+        self.ignore_ide_checkbox = QCheckBox("Ignore IDE metadata (.vscode/, .idea/)")
+        self.ignore_ide_checkbox.setChecked(True)
+        self.left_layout.addWidget(self.ignore_ide_checkbox)
+
+        self.ignore_log_files_checkbox = QCheckBox("Ignore log files (*.log)")
+        self.ignore_log_files_checkbox.setChecked(True)
+        self.left_layout.addWidget(self.ignore_log_files_checkbox)
         self.left_layout.addSpacing(5)
 
         # Include file types
-        self.include_label = QLabel("Include file types:")
+        self.include_label = QLabel("Include ONLY extensions:")
         self.left_layout.addWidget(self.include_label)
         self.include_entry = QLineEdit()
         self.include_entry.setPlaceholderText("e.g. .py .js .java")
@@ -454,7 +506,7 @@ class App(QMainWindow):
         self.left_layout.addSpacing(5)
 
         # Exclude file types
-        self.exclude_label = QLabel("Exclude file types:")
+        self.exclude_label = QLabel("Exclude extensions:")
         self.left_layout.addWidget(self.exclude_label)
         self.exclude_entry = QLineEdit()
         self.exclude_entry.setPlaceholderText("e.g. .log .tmp .bak")
@@ -462,26 +514,11 @@ class App(QMainWindow):
         self.left_layout.addSpacing(5)
 
         # Exclude folder patterns
-        self.exclude_folders_label = QLabel("Exclude folders (glob patterns):")
+        self.exclude_folders_label = QLabel("Exclude folders/files (glob patterns):")
         self.left_layout.addWidget(self.exclude_folders_label)
         self.exclude_folders_entry = QLineEdit()
-        self.exclude_folders_entry.setPlaceholderText("e.g. **/node_modules/* **/build/*")
+        self.exclude_folders_entry.setPlaceholderText("e.g. */temp/*, *.log, build")
         self.left_layout.addWidget(self.exclude_folders_entry)
-        self.left_layout.addSpacing(5)
-
-        # Checkboxes for various options
-        self.include_git_checkbox = QCheckBox("Include git files")
-        self.left_layout.addWidget(self.include_git_checkbox)
-
-        self.exclude_readme_checkbox = QCheckBox("Exclude Readme")
-        self.left_layout.addWidget(self.exclude_readme_checkbox)
-
-        self.exclude_license_checkbox = QCheckBox("Exclude license")
-        self.exclude_license_checkbox.setChecked(True)
-        self.left_layout.addWidget(self.exclude_license_checkbox)
-
-        self.line_numbers_checkbox = QCheckBox("Add line numbers to copied files")
-        self.left_layout.addWidget(self.line_numbers_checkbox)
 
         self.left_layout.addSpacing(10)
 
@@ -1450,16 +1487,35 @@ class App(QMainWindow):
             self.add_to_history(source_path, is_local=False)
 
         # Prepare arguments
+        exclude_folders = self.exclude_folders_entry.text().split() if self.exclude_folders_entry.text() else []
+        
+        if self.ignore_pycache_checkbox.isChecked():
+            exclude_folders.extend(['__pycache__', '*/__pycache__', '__pycache__/*', '*/__pycache__/*'])
+            exclude_folders.append('*.pyc')
+        if self.ignore_node_modules_checkbox.isChecked():
+            exclude_folders.extend(['node_modules', '*/node_modules', 'node_modules/*', '*/node_modules/*'])
+        if self.ignore_lock_files_checkbox.isChecked():
+            exclude_folders.extend(['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'])
+        if self.ignore_build_checkbox.isChecked():
+            exclude_folders.extend(['build', '*/build', 'build/*', '*/build/*'])
+            exclude_folders.extend(['dist', '*/dist', 'dist/*', '*/dist/*'])
+        if self.ignore_ide_checkbox.isChecked():
+            exclude_folders.extend(['.vscode', '*/.vscode', '.vscode/*', '*/.vscode/*'])
+            exclude_folders.extend(['.idea', '*/.idea', '.idea/*', '*/.idea/*'])
+
+        if self.ignore_log_files_checkbox.isChecked():
+            exclude_folders.append('*.log')
+
         args = argparse.Namespace(
             input=source_path,
             directories=False,
             exclude=self.exclude_entry.text().split() if self.exclude_entry.text() else None,
             include=self.include_entry.text().split() if self.include_entry.text() else None,
-            exclude_folders=self.exclude_folders_entry.text().split() if self.exclude_folders_entry.text() else None,
+            exclude_folders=exclude_folders,
             concatenate=not self.only_show_structure,  # Use the structure-only setting
-            include_git=self.include_git_checkbox.isChecked(),
-            include_license=not self.exclude_license_checkbox.isChecked(),
-            exclude_readme=self.exclude_readme_checkbox.isChecked()
+            include_git=not self.ignore_git_checkbox.isChecked(),
+            include_license=not self.ignore_license_checkbox.isChecked(),
+            exclude_readme=self.ignore_readme_checkbox.isChecked()
         )
 
         # Clear current data
@@ -1487,9 +1543,11 @@ class App(QMainWindow):
         pat = None
         if not is_local and hasattr(self, 'use_pat_checkbox') and self.use_pat_checkbox.isChecked():
             pat = self.pat_entry.text()
+
+        copy_local = self.copy_local_folder_checkbox.isChecked() if is_local else False
             
         self.analysis_thread = AnalysisThread(
-            source_path, args, is_local, pat
+            source_path, args, is_local, pat, copy_local
         )
 
         self.analysis_thread.progress_signal.connect(self.update_progress)

@@ -13,10 +13,24 @@ def is_binary(file_path):
     This is a fast check that does not read the file content.
     """
     binary_extensions = [
-        '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.tif', '.tiff',
-        '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx',
-        '.zip', '.tar', '.gz', '.rar', '.7z', '.exe', '.dll', '.so', '.dylib',
-        '.pyc', '.pyd', '.db', '.sqlite', '.dat', '.bin', '.o', '.class'
+        # Images
+        '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.tif', '.tiff', '.webp',
+        # Documents
+        '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.odt', '.ods', '.odp',
+        # Archives
+        '.zip', '.tar', '.gz', '.rar', '.7z', '.bz2', '.xz',
+        # Executables and libraries
+        '.exe', '.dll', '.so', '.dylib', '.msi',
+        # Compiled code / data
+        '.pyc', '.pyd', '.db', '.sqlite', '.dat', '.bin', '.o', '.class', '.jar',
+        # Audio
+        '.mp3', '.wav', '.flac', '.ogg', '.m4a',
+        # Video
+        '.mp4', '.mkv', '.avi', '.mov', '.wmv',
+        # Fonts
+        '.ttf', '.otf', '.woff', '.woff2',
+        # Other
+        '.lock', '.DS_Store'
     ]
     return any(file_path.lower().endswith(ext) for ext in binary_extensions)
 
@@ -33,8 +47,10 @@ def should_exclude(path, ignore_git, exclude_license, exclude_readme, exclude_fo
         return True
     if exclude_readme and filename.lower() in ['readme', 'readme.txt', 'readme.md']:
         return True
-    if exclude_folders and any(fnmatch.fnmatch(path, pattern) for pattern in exclude_folders):
-        return True
+    if exclude_folders:
+        normalized_path = path.replace(os.sep, '/')
+        if any(fnmatch.fnmatch(normalized_path, pattern) or fnmatch.fnmatch(filename, pattern) for pattern in exclude_folders):
+            return True
     return False
 
 def get_structure(path, only_dirs=False, exclude=None, include=None,
@@ -45,9 +61,11 @@ def get_structure(path, only_dirs=False, exclude=None, include=None,
             continue
 
         rel_path = os.path.relpath(root, path)
-        if exclude_folders and any(fnmatch.fnmatch(rel_path, pattern) for pattern in exclude_folders):
-            dirs[:] = []
-            continue
+        if exclude_folders:
+            normalized_rel_path = rel_path.replace(os.sep, '/')
+            if any(fnmatch.fnmatch(normalized_rel_path, pattern) for pattern in exclude_folders):
+                dirs[:] = []
+                continue
 
         level = root.replace(path, '').count(os.sep)
         indent = '│   ' * (level - 1) + '├── '
@@ -90,9 +108,11 @@ def concatenate_files(path, exclude=None, include=None, ignore_git=True,
 
         rel_path = os.path.relpath(root, path)
         
-        if exclude_folders and any(fnmatch.fnmatch(rel_path, pattern) for pattern in exclude_folders):
-            dirs[:] = []
-            continue
+        if exclude_folders:
+            normalized_rel_path = rel_path.replace(os.sep, '/')
+            if any(fnmatch.fnmatch(normalized_rel_path, pattern) for pattern in exclude_folders):
+                dirs[:] = []
+                continue
         
         has_content_in_dir = False
 

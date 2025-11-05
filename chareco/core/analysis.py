@@ -2,6 +2,7 @@ import os
 import tempfile
 import time
 import logging
+import shutil
 from PyQt6.QtCore import QThread, pyqtSignal
 from dulwich import porcelain
 from chareco.core.utils import (
@@ -13,19 +14,30 @@ class AnalysisThread(QThread):
     finished_signal = pyqtSignal(str, dict, dict)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, source_path, args, is_local=False, pat=None):
+    def __init__(self, source_path, args, is_local=False, pat=None, copy_local_folder=False):
         super().__init__()
         self.source_path = source_path
         self.args = args
         self.is_local = is_local
         self.pat = pat
+        self.copy_local_folder = copy_local_folder
 
     def run(self):
         temp_dir = None
+        folder_path = None
         try:
             if self.is_local:
-                folder_path = self.source_path
-                self.progress_signal.emit("Analyzing local folder...", 25)
+                if self.copy_local_folder:
+                    temp_dir = tempfile.mkdtemp()
+                    source_folder = self.source_path
+                    folder_path = os.path.join(temp_dir, os.path.basename(source_folder.rstrip(os.sep)))
+                    
+                    self.progress_signal.emit("Copying local folder...", 15)
+                    shutil.copytree(source_folder, folder_path, dirs_exist_ok=True)
+                    self.progress_signal.emit("Analyzing copied folder...", 25)
+                else:
+                    folder_path = self.source_path
+                    self.progress_signal.emit("Analyzing local folder...", 25)
             else:
                 temp_dir = tempfile.mkdtemp()
                 self.progress_signal.emit("Cloning repository...", 25)
