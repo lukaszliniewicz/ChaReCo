@@ -28,6 +28,7 @@ You can view a sample output from the [Pandrator](https://github.com/lukaszlinie
     - Case sensitivity
     - Whole word matching
 - Dynamically select/deselect individual files or entire folders in the tree view to customize the final output.
+- Refresh local folder contents without losing file selections, ensuring you're working with the most up-to-date files.
 - Estimate token counts for the generated output.
 - Improved performance with background processing for analysis and search.
 - Quickly access recent repositories and local folders from a history dropdown.
@@ -86,6 +87,7 @@ There are a few ways to get ChaReCo running:
     *   View the generated structure and concatenated content.
     *   Use the **Search bar** to find specific text within the loaded files (supports regex, case sensitivity, whole word). Search results will highlight matching files in the tree.
     *   Select/deselect individual files or entire folders in the tree view to dynamically update the content in the main text area.
+    *   For local folders, use the **Refresh** button to reload the folder's contents. Your file selections will be preserved, allowing you to quickly copy the latest versions of your chosen files.
     *   Copy the selected content to the clipboard or save it to a file.
 6.  Use the generated text output in your LLM chat conversations.
 
@@ -155,6 +157,14 @@ Example: You need to find all instances of a deprecated function or understand w
 - Load the entire repository or relevant sub-directory into ChaReCo.
 - Use the **search feature** with the function name or variable. Employ regex for more complex queries (e.g., `config\.get\(['"]API_KEY['"]\)`).
 - The tool will highlight all matching files, allowing you to quickly gather the context of these occurrences for the LLM or your own understanding.
+
+### 12. Streamlining Multi-Model Development Workflows
+Example: You are using a CLI-based coding assistant like Aider with a faster, cheaper model for initial development. However, you occasionally need guidance from a more powerful model (like Claude Opus or GPT-4) via its chat interface.
+- Analyze your local project folder in ChaReCo and select the key files you are working on.
+- Use your CLI tool to make changes to the code.
+- Instead of manually finding and re-selecting the modified files in ChaReCo, simply click the **Refresh** button. ChaReCo will reload the folder content while keeping your file selections intact.
+- Click "Copy Files" to get the latest version of your selected files.
+- Paste this updated context into the chat interface of the powerful model and ask for high-level feedback, refactoring ideas, or architectural guidance that you can then implement with your CLI assistant. This workflow saves time and avoids the tedious process of re-selecting files.
 
 ## License
 

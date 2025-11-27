@@ -73,6 +73,7 @@ class App(QMainWindow):
         # Initialize state variables
         self.file_positions = {}
         self.file_contents = {}  # Store file contents for faster access
+        self.file_token_counts = {}  # Cache for file token counts
         self.progress_dialog = None
         self.local_folder_path = None
         self.search_results = []
@@ -640,14 +641,6 @@ class App(QMainWindow):
         self.tree_toolbar_layout.setSpacing(5)
 
         # Create compact buttons with icons
-        self.copy_selected_button = QToolButton()
-        self.copy_selected_button.setText("Copy Files")
-        self.copy_selected_button.setToolTip("Copy selected files to clipboard")
-        self.copy_selected_button.setIcon(QIcon.fromTheme("edit-copy"))
-        self.copy_selected_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.copy_selected_button.clicked.connect(self.copy_selected_files)
-        self.tree_toolbar_layout.addWidget(self.copy_selected_button)
-
         self.select_all_button = QToolButton()
         self.select_all_button.setToolTip("Select all files")
         self.select_all_button.setIcon(QIcon.fromTheme("edit-select-all"))
@@ -699,36 +692,10 @@ class App(QMainWindow):
         # Create a centered toolbar for text actions
         self.text_toolbar = QWidget()
         self.text_toolbar.setProperty("class", "ButtonGroup")
-        self.text_toolbar.setFixedWidth(500)  # Set a fixed width for the toolbar
         self.text_toolbar_layout = QHBoxLayout(self.text_toolbar)
         self.text_toolbar_layout.setContentsMargins(5, 5, 5, 5)
         self.text_toolbar_layout.setSpacing(5)
 
-        # Create compact buttons with icons
-        self.copy_all_button = QToolButton()
-        self.copy_all_button.setText("Copy All")
-        self.copy_all_button.setToolTip("Copy all text to clipboard")
-        self.copy_all_button.setIcon(QIcon.fromTheme("edit-copy"))
-        self.copy_all_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.copy_all_button.clicked.connect(self.copy_text)
-        self.text_toolbar_layout.addWidget(self.copy_all_button)
-
-        self.copy_selection_button = QToolButton()
-        self.copy_selection_button.setText("Copy Selection")
-        self.copy_selection_button.setToolTip("Copy selected text to clipboard")
-        self.copy_selection_button.setIcon(QIcon.fromTheme("edit-cut"))
-        self.copy_selection_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.copy_selection_button.clicked.connect(self.copy_selection)
-        self.text_toolbar_layout.addWidget(self.copy_selection_button)
-        
-        self.copy_visible_button = QToolButton()
-        self.copy_visible_button.setText("Copy Visible")
-        self.copy_visible_button.setToolTip("Copy currently visible text to clipboard")
-        self.copy_visible_button.setIcon(QIcon.fromTheme("edit-copy"))
-        self.copy_visible_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.copy_visible_button.clicked.connect(self.copy_visible_text)
-        self.text_toolbar_layout.addWidget(self.copy_visible_button)
-        
         # Show full content button - shows all content even if a folder/file is selected
         self.show_all_button = QToolButton()
         self.show_all_button.setText("Show All")
@@ -737,6 +704,51 @@ class App(QMainWindow):
         self.show_all_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.show_all_button.clicked.connect(self.show_all_content)
         self.text_toolbar_layout.addWidget(self.show_all_button)
+
+        # Add "Copy:" label
+        copy_label = QLabel("Copy:")
+        self.text_toolbar_layout.addWidget(copy_label)
+
+        # Create compact buttons with icons
+        self.copy_selected_files_button = QToolButton()
+        self.copy_selected_files_button.setText("Selected Files")
+        self.copy_selected_files_button.setToolTip("Copy selected files from the tree to clipboard")
+        self.copy_selected_files_button.setIcon(QIcon.fromTheme("edit-copy"))
+        self.copy_selected_files_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.copy_selected_files_button.clicked.connect(self.copy_selected_files)
+        self.text_toolbar_layout.addWidget(self.copy_selected_files_button)
+
+        self.copy_selection_button = QToolButton()
+        self.copy_selection_button.setText("Selection")
+        self.copy_selection_button.setToolTip("Copy selected text to clipboard")
+        self.copy_selection_button.setIcon(QIcon.fromTheme("edit-cut"))
+        self.copy_selection_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.copy_selection_button.clicked.connect(self.copy_selection)
+        self.text_toolbar_layout.addWidget(self.copy_selection_button)
+        
+        self.copy_visible_button = QToolButton()
+        self.copy_visible_button.setText("Visible")
+        self.copy_visible_button.setToolTip("Copy currently visible text to clipboard")
+        self.copy_visible_button.setIcon(QIcon.fromTheme("edit-copy"))
+        self.copy_visible_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.copy_visible_button.clicked.connect(self.copy_visible_text)
+        self.text_toolbar_layout.addWidget(self.copy_visible_button)
+
+        self.copy_all_button = QToolButton()
+        self.copy_all_button.setText("All")
+        self.copy_all_button.setToolTip("Copy all text to clipboard")
+        self.copy_all_button.setIcon(QIcon.fromTheme("edit-copy"))
+        self.copy_all_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.copy_all_button.clicked.connect(self.copy_text)
+        self.text_toolbar_layout.addWidget(self.copy_all_button)
+
+        self.copy_structure_button = QToolButton()
+        self.copy_structure_button.setText("Structure")
+        self.copy_structure_button.setToolTip("Copy the folder structure to clipboard")
+        self.copy_structure_button.setIcon(QIcon.fromTheme("edit-copy"))
+        self.copy_structure_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.copy_structure_button.clicked.connect(self.copy_structure)
+        self.text_toolbar_layout.addWidget(self.copy_structure_button)
 
         # Center the toolbar in the frame
         self.text_actions_layout.addWidget(self.text_toolbar, 0, Qt.AlignmentFlag.AlignCenter)
@@ -755,6 +767,9 @@ class App(QMainWindow):
 
         self.token_count_label = QLabel("Tokens: 0")
         self.count_layout.addWidget(self.token_count_label)
+
+        self.selected_token_count_label = QLabel("Selected Tokens: 0")
+        self.count_layout.addWidget(self.selected_token_count_label)
 
         # Add search result count label
         self.search_result_label = QLabel("")
@@ -1350,6 +1365,8 @@ class App(QMainWindow):
             self.update_parent_check_state(item.parent())
         finally:
             self._updating_items = False
+        
+        self.update_selected_counts()
 
     def update_children_check_state(self, parent_item, checked):
         if parent_item is None:
@@ -1415,6 +1432,7 @@ class App(QMainWindow):
             item.setCheckState(0, Qt.CheckState.Checked)
             self.update_children_check_state(item, True)
         self._updating_items = False
+        self.update_selected_counts()
 
     def deselect_all_files(self):
         self._updating_items = True
@@ -1425,6 +1443,7 @@ class App(QMainWindow):
             item.setCheckState(0, Qt.CheckState.Unchecked)
             self.update_children_check_state(item, False)
         self._updating_items = False
+        self.update_selected_counts()
 
     def load_history(self):
         """Load history from settings."""
@@ -1650,6 +1669,7 @@ class App(QMainWindow):
         # Store file contents for faster access
         self.file_contents = file_contents
         self.file_positions = file_positions
+        self.file_token_counts = {}
 
         # Update file tree if we have file positions
         if file_positions:
@@ -1663,6 +1683,8 @@ class App(QMainWindow):
         else:
             self.tree_container.hide()
             self.refresh_button.hide()
+
+        self.update_selected_counts()
 
         # Show success message
         self.show_message("Analysis completed.")
@@ -1685,6 +1707,7 @@ class App(QMainWindow):
 
         finally:
             self._updating_items = False
+            self.update_selected_counts()
 
     def update_sidebar(self, file_positions):
         if not file_positions:
@@ -1855,6 +1878,14 @@ class App(QMainWindow):
         else:
             self.show_message("No text selected")
             
+    def copy_structure(self):
+        if hasattr(self, 'folder_structure') and self.folder_structure:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(self.folder_structure)
+            self.show_toast_message("Folder structure copied")
+        else:
+            self.show_message("No folder structure available to copy.")
+
     def copy_visible_text(self):
         # Copy only what's currently displayed in the text area
         text = self.text_display.toPlainText()
@@ -1956,6 +1987,27 @@ class App(QMainWindow):
         token_count = self.count_tokens(text)
         self.char_count_label.setText(f"Characters: {char_count}")
         self.token_count_label.setText(f"Tokens: {token_count}")
+
+    def _get_file_token_count(self, file_path):
+        if file_path in self.file_token_counts:
+            return self.file_token_counts[file_path]
+            
+        content = self._get_file_content(file_path)
+        if content:
+            count = self.count_tokens(content)
+            self.file_token_counts[file_path] = count
+            return count
+        return 0
+
+    def update_selected_counts(self):
+        checked_files = self.get_checked_items()
+        total_tokens = 0
+        
+        for path_parts, _ in checked_files:
+            full_path = os.path.join(*path_parts)
+            total_tokens += self._get_file_token_count(full_path)
+            
+        self.selected_token_count_label.setText(f"Selected Tokens: {total_tokens}")
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
