@@ -81,6 +81,8 @@ class App(QMainWindow):
         self.search_progress_bar = None
         self.search_workers = []
         self.thread_pool = QThreadPool.globalInstance()
+        self.paths_to_restore = None
+        self.path_to_item_map = {}
         self.repo_history = []
         self.local_history = []
         self.settings = QSettings("ChaReCo", "ChaReCo")
@@ -522,6 +524,9 @@ class App(QMainWindow):
 
         self.left_layout.addSpacing(10)
 
+        # Action buttons layout
+        self.action_buttons_layout = QHBoxLayout()
+        
         # Analyze button
         self.analyze_button = QPushButton("Analyze")
         self.analyze_button.setStyleSheet("""
@@ -533,7 +538,29 @@ class App(QMainWindow):
             }
         """)
         self.analyze_button.clicked.connect(self.analyze_source)
-        self.left_layout.addWidget(self.analyze_button)
+        self.action_buttons_layout.addWidget(self.analyze_button)
+
+        # Refresh button
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.setStyleSheet("""
+            QPushButton {
+                font-weight: bold;
+                padding: 10px;
+                background-color: #1f538d;
+                font-size: 15px;
+            }
+            QPushButton:hover {
+                background-color: #2a75bb;
+            }
+            QPushButton:pressed {
+                background-color: #1a4a75;
+            }
+        """)
+        self.refresh_button.clicked.connect(self.refresh_local_folder)
+        self.refresh_button.hide()
+        self.action_buttons_layout.addWidget(self.refresh_button)
+
+        self.left_layout.addLayout(self.action_buttons_layout)
 
         # Add spacer to push everything to the top
         self.left_layout.addStretch()
@@ -559,11 +586,16 @@ class App(QMainWindow):
             self.source_layout.addWidget(self.repo_input_widget)
             self.only_structure_checkbox.setChecked(False)
             self.only_structure_checkbox.setEnabled(False)
+            self.refresh_button.hide()
         else:
             self.repo_input_widget.hide()
             self.local_input_widget.show()
             self.source_layout.addWidget(self.local_input_widget)
             self.only_structure_checkbox.setEnabled(True)
+            if self.tree_container.isVisible():
+                self.refresh_button.show()
+            else:
+                self.refresh_button.hide()
 
     def browse_local_folder(self):
         folder_path = QFileDialog.getExistingDirectory(
@@ -1469,6 +1501,32 @@ class App(QMainWindow):
         self.local_path_display.setToolTip(full_path)
         self.local_path_display.setText(display_path)
 
+    def refresh_local_folder(self):
+        if not self.local_radio.isChecked() or not self.local_folder_path:
+            self.show_message("Refresh is only available for an active local folder analysis.")
+            return
+
+        self.paths_to_restore = self._get_checked_item_paths()
+        self.analyze_source()
+
+    def _get_checked_item_paths(self):
+        paths = set()
+        root = self.file_tree.invisibleRootItem()
+        
+        items_to_process = []
+        for i in range(root.childCount()):
+            items_to_process.append(root.child(i))
+
+        while items_to_process:
+            item = items_to_process.pop(0)
+            if item.childCount() == 0 and item.checkState(0) == Qt.CheckState.Checked:
+                paths.add(self.get_item_path(item))
+            
+            for i in range(item.childCount()):
+                items_to_process.append(item.child(i))
+        
+        return paths
+
     def analyze_source(self):
         # Determine whether to analyze a remote repo or local folder
         is_local = self.local_radio.isChecked()
@@ -1596,12 +1654,37 @@ class App(QMainWindow):
         # Update file tree if we have file positions
         if file_positions:
             self.update_sidebar(file_positions)
+            if hasattr(self, 'paths_to_restore') and self.paths_to_restore:
+                self._restore_checked_items(self.paths_to_restore)
+                self.paths_to_restore = None
             self.tree_container.show()
+            if self.local_radio.isChecked():
+                self.refresh_button.show()
         else:
             self.tree_container.hide()
+            self.refresh_button.hide()
 
         # Show success message
         self.show_message("Analysis completed.")
+
+    def _restore_checked_items(self, paths_to_restore):
+        try:
+            self._updating_items = True
+            parents_to_update = []
+
+            for path in paths_to_restore:
+                item = self.path_to_item_map.get(path)
+                if item:
+                    item.setCheckState(0, Qt.CheckState.Checked)
+                    parent = item.parent()
+                    if parent and parent not in parents_to_update:
+                        parents_to_update.append(parent)
+            
+            for parent in parents_to_update:
+                self.update_parent_check_state(parent)
+
+        finally:
+            self._updating_items = False
 
     def update_sidebar(self, file_positions):
         if not file_positions:
@@ -1610,6 +1693,7 @@ class App(QMainWindow):
 
         # Clear the tree
         self.file_tree.clear()
+        self.path_to_item_map.clear()
 
         # Disconnect signal temporarily to prevent events during tree building
         self.file_tree.itemChanged.disconnect(self.on_item_changed)
@@ -1656,6 +1740,7 @@ class App(QMainWindow):
                     item = QTreeWidgetItem(parent_item, [part])
                     item.setCheckState(0, Qt.CheckState.Unchecked)
                     item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    self.path_to_item_map[path] = item
 
                     # Set an icon based on file extension
                     if part.endswith(('.py')):
