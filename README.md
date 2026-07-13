@@ -31,27 +31,27 @@ You can view a sample output from the [Pandrator](https://github.com/lukaszlinie
 
 ChaReCo requires Python 3.10 or newer.
 
-**1. Download the .exe (Windows)**
+**1. Install from PyPI (Recommended for Python users)**
+   - Ensure Python 3.10+ is installed and accessible in your PATH.
+   - Open a terminal and run:
+     ```bash
+     python -m pip install --upgrade chareco
+     ```
+   - Run the GUI:
+     ```bash
+     chareco
+     ```
+   - Or produce context from a terminal:
+     ```bash
+     chareco-context --local /path/to/project --include .py,.md --output context.txt
+     ```
+
+**2. Download the .exe (Windows)**
    - Head to the [Releases page](https://github.com/lukaszliniewicz/ChaReCo/releases) on GitHub.
    - Download the latest `.exe` file.
    - Run the executable. No installation is required.
 
-**2. Install from GitHub using pip (Recommended for Python users)**
-   - Ensure Python 3.10+ is installed and accessible in your PATH.
-   - Open your terminal or command prompt and run:
-     ```bash
-     pip install git+https://github.com/lukaszliniewicz/ChaReCo.git
-     ```
-    - Run the GUI:
-     ```bash
-      chareco
-      ```
-    - Or produce context from a terminal:
-      ```bash
-      chareco-context --local /path/to/project --include .py,.md --output context.txt
-      ```
-
-**3. Manual Setup from Cloned Repository**
+**3. Manual Setup from a Cloned Repository**
    - Ensure Git and Python 3.10+ are installed.
    - Clone the repository:
      ```bash
@@ -63,7 +63,7 @@ ChaReCo requires Python 3.10 or newer.
      ```
    - Install dependencies:
      ```bash
-      pip install -e .
+      python -m pip install -e .
      ```
    - Run the application:
      ```bash
