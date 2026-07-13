@@ -101,9 +101,9 @@ chareco-context https://github.com/org/private-repo.git --branch main --pat-env 
 
 Run `chareco-context --help` for all options.
 
-## Building the Windows executable
+## Building release artifacts
 
-From a Windows checkout, install the build extra and create a single-file executable:
+On Windows, install the build extra and create a single-file executable:
 
 ```bash
 python -m pip install .[build]
@@ -111,6 +111,17 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name ChaReCo --
 ```
 
 The executable is written to `dist/ChaReCo.exe`.
+
+On Fedora or another x86_64 Linux host, use the reproducible AppImage builder:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install '.[build]'
+./scripts/build_appimage.sh .venv/bin/python
+```
+
+The AppImage is written to `dist/ChaReCo-<version>-x86_64.AppImage`.
 
 ## Use Cases and Examples
 
