@@ -4,6 +4,8 @@ from chareco.gui import App
 
 def main():
     app = QApplication(sys.argv)
+    app.setOrganizationName("ChaReCo")
+    app.setApplicationName("ChaReCo")
     window = App()
     window.show()
     sys.exit(app.exec())

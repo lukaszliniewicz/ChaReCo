@@ -1,26 +1,31 @@
 import os
-import argparse
-import multiprocessing
 import logging
-import sys
+import re
+from collections import deque
+from threading import Event
+from pathlib import PurePosixPath
+from urllib.parse import urlsplit, urlunsplit
+
 import tiktoken
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QLabel, QLineEdit,
-    QCheckBox, QTextEdit, QVBoxLayout, QHBoxLayout, QFileDialog, QTreeWidget,
-    QTreeWidgetItem, QMessageBox, QSplitter, QProgressDialog, QTabWidget,
-    QRadioButton, QButtonGroup, QFrame, QToolButton, QStyle, QProgressBar,
-    QScrollArea, QComboBox, QMenu
+    QCheckBox, QVBoxLayout, QHBoxLayout, QFileDialog, QTreeWidget,
+    QTreeWidgetItem, QMessageBox, QSplitter, QProgressDialog, QRadioButton,
+    QButtonGroup, QFrame, QToolButton, QProgressBar, QScrollArea, QMenu,
+    QPlainTextEdit
 )
 from PyQt6.QtCore import (
-    Qt, QThread, pyqtSignal, QSize, QTimer, QRunnable, QThreadPool, QObject, QSettings
+    Qt, QThread, QSize, QTimer, QThreadPool, QSettings
 )
 from PyQt6.QtGui import (
     QTextCursor, QTextCharFormat, QColor, QIcon, QFont, QBrush, QTextDocument, QAction
 )
 
+from chareco import __version__
 from chareco.core.analysis import AnalysisThread
+from chareco.core.models import AnalysisOptions, AnalysisResult
 from chareco.core.search import SearchWorker
-from chareco.core.utils import concatenate_folder_files, convert_notebook_to_markdown
+from chareco.core.utils import convert_notebook_to_markdown, read_text_file
 
 class App(QMainWindow):
     def __init__(self):
@@ -33,9 +38,6 @@ class App(QMainWindow):
         # Create a size that works for most screens
         self.resize(1400, 900)
         
-        # Set to maximized state to use full screen
-        self.showMaximized()
-
         # Central widget and main layout
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -72,25 +74,54 @@ class App(QMainWindow):
 
         # Initialize state variables
         self.file_positions = {}
-        self.file_contents = {}  # Store file contents for faster access
-        self.file_token_counts = {}  # Cache for file token counts
+        self.file_contents = {}
+        self.file_token_counts = {}
+        self.current_result = None
+        self.current_options = None
+        self.pending_options = None
+        self.folder_structure = ""
         self.progress_dialog = None
+        self.analysis_thread = None
         self.local_folder_path = None
         self.search_results = []
+        self.search_errors = []
         self.current_search_index = -1
         self.is_searching = False
         self.search_progress_bar = None
         self.search_workers = []
-        self.thread_pool = QThreadPool.globalInstance()
+        self.search_errors = []
+        self.search_job_id = 0
+        self.search_cancel_event = None
+        self.search_pending_workers = 0
+        self.search_completed_files = 0
+        self.search_total_files = 0
+        self.thread_pool = QThreadPool(self)
         self.paths_to_restore = None
         self.path_to_item_map = {}
         self.repo_history = []
         self.local_history = []
         self.settings = QSettings("ChaReCo", "ChaReCo")
-        
-        # Set maximum thread count (can be adjusted based on system)
-        self.max_threads = max(4, multiprocessing.cpu_count())
+        geometry = self.settings.value("geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        splitter_state = self.settings.value("splitter_state")
+        if splitter_state is not None:
+            self.splitter.restoreState(splitter_state)
+
+        # A local, bounded pool avoids starving the GUI or unrelated Qt users.
+        self.max_threads = min(8, max(1, QThread.idealThreadCount()))
         self.thread_pool.setMaxThreadCount(self.max_threads)
+
+        try:
+            self._token_encoding = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            self._token_encoding = None
+        self._counts_timer = QTimer(self)
+        self._counts_timer.setSingleShot(True)
+        self._counts_timer.timeout.connect(self._recalculate_counts)
+        self._selected_counts_timer = QTimer(self)
+        self._selected_counts_timer.setSingleShot(True)
+        self._selected_counts_timer.timeout.connect(self._recalculate_selected_counts)
 
         # Setup dark theme
         self.setup_dark_theme()
@@ -146,7 +177,7 @@ class App(QMainWindow):
                 color: white;
                 min-height: 25px;
             }
-            QTextEdit {
+            QTextEdit, QPlainTextEdit {
                 background-color: #3c3c3c;
                 border: 1px solid #555555;
                 border-radius: 0px;
@@ -375,13 +406,17 @@ class App(QMainWindow):
         self.repo_entry.setPlaceholderText("Enter GitHub repo URL")
         self.repo_input_layout.addWidget(self.repo_entry)
 
+        self.branch_entry = QLineEdit()
+        self.branch_entry.setPlaceholderText("Branch or tag (optional; default branch if empty)")
+        self.repo_input_layout.addWidget(self.branch_entry)
+
         self.repo_history_button = QPushButton("Load from History")
         self.repo_history_button.setToolTip("Select a repository from history")
         self.repo_history_button.clicked.connect(self.show_repo_history_menu)
         self.repo_input_layout.addWidget(self.repo_history_button)
 
         # Add checkbox for PAT
-        self.use_pat_checkbox = QCheckBox("I would like to provide a private key")
+        self.use_pat_checkbox = QCheckBox("Use a GitHub Personal Access Token")
         self.use_pat_checkbox.toggled.connect(self.toggle_pat_visibility)
 
         # PAT container
@@ -390,7 +425,7 @@ class App(QMainWindow):
         self.pat_container_layout.setContentsMargins(0, 0, 0, 0)
         self.pat_container.hide()  # Initially hidden
 
-        self.pat_label = QLabel("Personal Access Token:")
+        self.pat_label = QLabel("Personal Access Token (never stored):")
         self.pat_entry = QLineEdit()
         self.pat_entry.setPlaceholderText("For private repositories")
         self.pat_entry.setEchoMode(QLineEdit.EchoMode.Password)
@@ -498,6 +533,10 @@ class App(QMainWindow):
         self.ignore_log_files_checkbox = QCheckBox("Ignore log files (*.log)")
         self.ignore_log_files_checkbox.setChecked(True)
         self.left_layout.addWidget(self.ignore_log_files_checkbox)
+
+        self.ignore_secret_files_checkbox = QCheckBox("Ignore likely secret files (.env, keys, credentials)")
+        self.ignore_secret_files_checkbox.setChecked(True)
+        self.left_layout.addWidget(self.ignore_secret_files_checkbox)
         self.left_layout.addSpacing(5)
 
         # Include file types
@@ -522,6 +561,16 @@ class App(QMainWindow):
         self.exclude_folders_entry = QLineEdit()
         self.exclude_folders_entry.setPlaceholderText("e.g. */temp/*, *.log, build")
         self.left_layout.addWidget(self.exclude_folders_entry)
+
+        self.max_file_size_entry = QLineEdit("1")
+        self.max_file_size_entry.setPlaceholderText("Maximum file size in MiB")
+        self.left_layout.addWidget(QLabel("Maximum file size (MiB):"))
+        self.left_layout.addWidget(self.max_file_size_entry)
+
+        self.max_output_size_entry = QLineEdit("20")
+        self.max_output_size_entry.setPlaceholderText("Maximum total output in MiB")
+        self.left_layout.addWidget(QLabel("Maximum output size (MiB):"))
+        self.left_layout.addWidget(self.max_output_size_entry)
 
         self.left_layout.addSpacing(10)
 
@@ -567,7 +616,7 @@ class App(QMainWindow):
         self.left_layout.addStretch()
 
         # Add a version label at the bottom
-        version_label = QLabel("v2.0.0")
+        version_label = QLabel(f"v{__version__}")
         version_label.setStyleSheet("color: #777777; font-size: 12px;")
         version_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.left_layout.addWidget(version_label)
@@ -742,6 +791,14 @@ class App(QMainWindow):
         self.copy_all_button.clicked.connect(self.copy_text)
         self.text_toolbar_layout.addWidget(self.copy_all_button)
 
+        self.save_full_button = QToolButton()
+        self.save_full_button.setText("Save Full")
+        self.save_full_button.setToolTip("Save the complete analysis to a UTF-8 text file")
+        self.save_full_button.setIcon(QIcon.fromTheme("document-save"))
+        self.save_full_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.save_full_button.clicked.connect(self.save_full_text)
+        self.text_toolbar_layout.addWidget(self.save_full_button)
+
         self.copy_structure_button = QToolButton()
         self.copy_structure_button.setText("Structure")
         self.copy_structure_button.setToolTip("Copy the folder structure to clipboard")
@@ -781,8 +838,8 @@ class App(QMainWindow):
         self.text_layout.addWidget(self.count_frame, 0, Qt.AlignmentFlag.AlignRight)
 
         # Add text edit for displaying content
-        self.text_display = QTextEdit()
-        self.text_display.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.text_display = QPlainTextEdit()
+        self.text_display.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.text_display.textChanged.connect(self.update_counts)
         self.text_display.setTabStopDistance(QFont("Consolas").pointSizeF() * 4)
         self.text_layout.addWidget(self.text_display)
@@ -814,49 +871,10 @@ class App(QMainWindow):
         return should_be_visible
 
     def show_all_content(self):
-        """Show all content in the text display."""
-        # Use the analyzed content stored in memory
-        full_content = self.text_display.document().toPlainText()
-        
-        # Check if we have distinct section markers or this is already the full content
-        if "Folder structure:" in full_content:
-            # This may already be the full content, do nothing
+        """Restore the immutable serialized result, not editable widget state."""
+        if self.current_result is None:
             return
-            
-        # Try to reconstruct from folder structure and concatenated content
-        content = []
-        
-        # Append folder structure if available
-        if hasattr(self, 'folder_structure') and self.folder_structure:
-            content.append(f"Folder structure:\n{self.folder_structure}")
-        
-        # Add concatenated content
-        if self.file_contents:
-            content.append("\nConcatenated content:")
-            
-            # Group files by directory
-            dirs = {}
-            for path in sorted(self.file_contents.keys()):
-                dirname = os.path.dirname(path)
-                if dirname not in dirs:
-                    dirs[dirname] = []
-                dirs[dirname].append(path)
-            
-            # Add directory headers and files
-            for dirname in sorted(dirs.keys()):
-                if dirname:
-                    content.append(f"\n---{dirname}/---")
-                else:
-                    content.append("\n---/---")
-                    
-                for filepath in dirs[dirname]:
-                    filename = os.path.basename(filepath)
-                    file_content = self.file_contents[filepath]
-                    content.append(f"\n--{filename}--\n{file_content}")
-        
-        # Set reconstructed content
-        self.text_display.clear()
-        self.text_display.setPlainText("\n".join(content))
+        self.text_display.setPlainText(self.current_result.full_text)
         self.update_counts()
 
     def setup_search_bar(self):
@@ -940,70 +958,82 @@ class App(QMainWindow):
         self.text_layout.addWidget(self.search_container)
 
     def perform_search(self):
-        # Don't start a new search if one is in progress
-        if self.is_searching:
-            return
-            
-        # Clear previous search results
-        self.clear_search_highlights()
-        
-        # Get search parameters
+        self.cancel_search()
         search_text = self.search_input.text()
         if not search_text:
             return
-            
+
+        use_regex = self.regex_checkbox.isChecked()
+        whole_word = self.whole_word_checkbox.isChecked()
+        pattern_text = search_text if use_regex else re.escape(search_text)
+        if whole_word:
+            pattern_text = rf"\b(?:{pattern_text})\b"
+        try:
+            re.compile(pattern_text)
+        except re.error as error:
+            self.search_result_label.setText(f"Invalid regular expression: {error}")
+            self.update_navigation_buttons()
+            return
+
+        search_files = sorted(self.file_contents.items())
+        if not search_files:
+            self.search_results = []
+            self.search_result_label.setText("No loaded file content to search")
+            self.update_navigation_buttons()
+            return
+
+        self.clear_search_highlights()
+        self.search_job_id += 1
+        job_id = self.search_job_id
+        self.search_cancel_event = Event()
         self.is_searching = True
         self.search_button.setEnabled(False)
-        
-        # Check if progress bar exists before using it
-        if hasattr(self, 'search_progress_bar') and self.search_progress_bar is not None:
-            self.search_progress_bar.setValue(0)
-            self.search_progress_bar.show()
-        else:
-            # Create it if it doesn't exist
-            self.search_progress_bar = QProgressBar()
-            self.search_progress_bar.setFixedHeight(10)
-            self.search_progress_bar.setTextVisible(False)
-            self.search_layout.addWidget(self.search_progress_bar)
-            self.search_progress_bar.setValue(0)
-            self.search_progress_bar.show()
-        
-        # Prepare search parameters  
-        case_sensitive = self.case_sensitive_checkbox.isChecked()
-        whole_word = self.whole_word_checkbox.isChecked()
-        use_regex = self.regex_checkbox.isChecked()
-        
-        # Create list of files to search
-        search_files = []
-        for file_path, content in self.file_contents.items():
-            search_files.append((file_path, content))
-        
-        # Break files into chunks for multiple threads
-        chunk_size = max(1, len(search_files) // self.max_threads)
-        chunks = [search_files[i:i + chunk_size] for i in range(0, len(search_files), chunk_size)]
-        
-        # Clear previous results
+        self.search_progress_bar.setRange(0, len(search_files))
+        self.search_progress_bar.setValue(0)
+        self.search_progress_bar.show()
         self.search_results = []
+        self.search_errors = []
         self.current_search_index = -1
-        
-        # Keep track of active workers
-        self.active_workers = len(chunks)
-        
-        # Create and start workers
+        self.search_completed_files = 0
+        self.search_total_files = len(search_files)
+        self.update_navigation_buttons()
+
+        worker_count = min(self.max_threads, len(search_files))
+        chunks = [search_files[index::worker_count] for index in range(worker_count)]
+        self.search_pending_workers = len(chunks)
+        self.search_workers = []
         for chunk in chunks:
-            worker = SearchWorker(chunk, search_text, case_sensitive, whole_word, use_regex)
+            worker = SearchWorker(
+                job_id,
+                chunk,
+                search_text,
+                case_sensitive=self.case_sensitive_checkbox.isChecked(),
+                whole_word=whole_word,
+                use_regex=use_regex,
+                cancel_event=self.search_cancel_event,
+            )
             worker.signals.result.connect(self.handle_search_results)
             worker.signals.progress.connect(self.update_search_progress)
             worker.signals.error.connect(self.handle_search_error)
             worker.signals.finished.connect(self.worker_finished)
-            
-            # Start the worker
+            self.search_workers.append(worker)
             self.thread_pool.start(worker)
 
-    def update_search_progress(self, progress_value):
-        # This will aggregate progress from multiple workers
-        if hasattr(self, 'search_progress_bar') and self.search_progress_bar is not None:
-            self.search_progress_bar.setValue(progress_value)
+    def cancel_search(self):
+        """Invalidate in-flight work; late worker signals are ignored by job id."""
+        if self.search_cancel_event is not None:
+            self.search_cancel_event.set()
+        self.search_cancel_event = None
+        self.is_searching = False
+        self.search_button.setEnabled(True)
+        if self.search_progress_bar is not None:
+            self.search_progress_bar.hide()
+
+    def update_search_progress(self, job_id, _current, _total):
+        if job_id != self.search_job_id or not self.is_searching:
+            return
+        self.search_completed_files += 1
+        self.search_progress_bar.setValue(self.search_completed_files)
 
     def finalize_search(self):
         # Hide progress bar
@@ -1012,9 +1042,14 @@ class App(QMainWindow):
         
         self.is_searching = False
         self.search_button.setEnabled(True)
+        self.search_cancel_event = None
+        self.search_workers = []
+        self.search_results.sort(key=lambda result: result[0])
         
         # Display final results
-        if self.search_results:
+        if self.search_errors:
+            self.search_result_label.setText(f"Search completed with errors: {self.search_errors[0]}")
+        elif self.search_results:
             # Flatten and organize results
             total_matches = sum(len(matches) for _, matches in self.search_results)
             self.search_result_label.setText(f"Found {total_matches} matches in {len(self.search_results)} files")
@@ -1027,25 +1062,23 @@ class App(QMainWindow):
         # Enable/disable navigation buttons
         self.update_navigation_buttons()
 
-    def handle_search_results(self, results):
-        # Append results from this worker
-        if results:
-            self.search_results.extend(results)
-            
-            # Update UI with preliminary results
-            self.search_result_label.setText(f"Searching... Found: {len(self.search_results)} files with matches")
+    def handle_search_results(self, job_id, results):
+        if job_id != self.search_job_id or not self.is_searching:
+            return
+        self.search_results.extend(results)
+        self.search_result_label.setText(f"Searching… {len(self.search_results)} matching files")
 
-    def handle_search_error(self, error_message):
-        self.is_searching = False
-        self.search_button.setEnabled(True)
-        self.search_progress_bar.hide()
-        self.show_error(error_message)
+    def handle_search_error(self, job_id, error_message):
+        if job_id != self.search_job_id or not self.is_searching:
+            return
+        self.search_errors.append(error_message)
+        self.search_result_label.setText(f"Search error: {error_message}")
 
-    def worker_finished(self):
-        self.active_workers -= 1
-        
-        # If all workers have finished, finalize the search
-        if self.active_workers <= 0:
+    def worker_finished(self, job_id):
+        if job_id != self.search_job_id or not self.is_searching:
+            return
+        self.search_pending_workers -= 1
+        if self.search_pending_workers == 0:
             self.finalize_search()
 
 
@@ -1053,92 +1086,70 @@ class App(QMainWindow):
         """Display search results in the text area with highlighted occurrences"""
         if not self.search_results:
             return
-            
-        # Clear text display
-        self.text_display.clear()
-        
-        # Create a formatted display of search results
+
+        display_sections = []
         for file_path, matches in self.search_results:
-            # Add file header
-            self.text_display.append(f"\n--{file_path}--")
-            
-            # Get file content
+            display_sections.append(f"--{file_path}--")
             content = self.file_contents.get(file_path, "")
             if not content:
                 continue
-                
-            # Add a few lines before and after each match with highlights
+
             lines = content.split('\n')
             highlighted_sections = []
             last_line_displayed = -1
-            
             for match in matches:
-                # Find the line number for this match
                 match_start = match.start()
                 line_start = content.rfind('\n', 0, match_start) + 1
-                match_end = match.end()
-                
-                # Find line number
                 line_number = content[:line_start].count('\n')
-                
-                # Determine the context range (3 lines before and after)
                 start_line = max(0, line_number - 3)
-                end_line = min(len(lines), line_number + 4)  # +4 because the range is exclusive
-                
-                # If we already displayed these lines, skip
+                end_line = min(len(lines), line_number + 4)
                 if start_line <= last_line_displayed:
                     start_line = last_line_displayed + 1
-                
-                # If no new lines to display, skip
                 if start_line >= end_line:
                     continue
-                    
-                # Add separator if this isn't the first section
                 if highlighted_sections:
                     highlighted_sections.append("...")
-                
-                # Extract the context lines
                 context_lines = lines[start_line:end_line]
-                
-                # Format with line numbers
                 formatted_lines = [f"{i+start_line+1}: {line}" for i, line in enumerate(context_lines)]
-                
-                # Remember the last line we displayed
                 last_line_displayed = end_line - 1
-                
-                # Add to our sections
                 highlighted_sections.append('\n'.join(formatted_lines))
-            
-            # Add the highlighted sections to the text display
-            self.text_display.append('\n'.join(highlighted_sections))
-        
-        # Set cursor to the beginning
+
+            display_sections.append('\n'.join(highlighted_sections))
+
+        self.text_display.setPlainText('\n\n'.join(display_sections))
         cursor = self.text_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.Start)
         self.text_display.setTextCursor(cursor)
-        
-        # Highlight search terms
+
+        self._highlight_matching_tree_files()
         search_text = self.search_input.text()
         if not self.regex_checkbox.isChecked():
-            # Simple text highlighting
             highlight_format = QTextCharFormat()
             highlight_format.setBackground(QColor("#8E44AD"))
             highlight_format.setForeground(QColor("white"))
-            
             cursor = self.text_display.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.Start)
             self.text_display.setTextCursor(cursor)
-            
             search_flags = QTextDocument.FindFlag(0)
             if self.case_sensitive_checkbox.isChecked():
                 search_flags |= QTextDocument.FindFlag.FindCaseSensitively
-                
             if self.whole_word_checkbox.isChecked():
                 search_flags |= QTextDocument.FindFlag.FindWholeWords
-                
             while self.text_display.find(search_text, search_flags):
                 cursor = self.text_display.textCursor()
                 cursor.mergeCharFormat(highlight_format)
+
+    def _highlight_matching_tree_files(self):
+        self._clear_tree_search_highlights()
+        highlight = QBrush(QColor("#C792EA"))
+        for file_path, _matches in self.search_results:
+            item = self.path_to_item_map.get(file_path)
+            if item is not None:
+                item.setForeground(0, highlight)
+
+    def _clear_tree_search_highlights(self):
+        for item in self.path_to_item_map.values():
+            item.setForeground(0, QBrush())
 
     def navigate_to_result(self, index):
         # This function is for jumping between occurrences
@@ -1155,7 +1166,7 @@ class App(QMainWindow):
         file_path, _ = self.search_results[self.current_search_index]
         
         # Find this file in the text
-        self.find_and_scroll_to(f"\n--{file_path}--")
+        self.find_and_scroll_to(f"--{file_path}--")
         
         # Update count display
         self.search_result_label.setText(f"File {self.current_search_index + 1} of {len(self.search_results)}")
@@ -1170,7 +1181,7 @@ class App(QMainWindow):
         file_path, _ = self.search_results[self.current_search_index]
         
         # Find this file in the text
-        self.find_and_scroll_to(f"\n--{file_path}--")
+        self.find_and_scroll_to(f"--{file_path}--")
         
         # Update count display
         self.search_result_label.setText(f"File {self.current_search_index + 1} of {len(self.search_results)}")
@@ -1189,9 +1200,10 @@ class App(QMainWindow):
         has_results = len(self.search_results) > 0
         self.prev_result_button.setEnabled(has_results)
         self.next_result_button.setEnabled(has_results)
-        self.clear_search_button.setEnabled(has_results)
+        self.clear_search_button.setEnabled(has_results or self.is_searching)
 
     def clear_search(self):
+        self.cancel_search()
         # Clear search input
         self.search_input.clear()
         
@@ -1200,7 +1212,9 @@ class App(QMainWindow):
         
         # Reset search results
         self.search_results = []
+        self.search_errors = []
         self.current_search_index = -1
+        self._clear_tree_search_highlights()
         
         # Update UI
         self.search_result_label.setText("")
@@ -1227,25 +1241,25 @@ class App(QMainWindow):
         if content is not None:
             return content
 
-        if self.only_show_structure and self.local_folder_path:
-            abs_path = os.path.join(self.local_folder_path, file_path)
-            if os.path.exists(abs_path):
-                if file_path.endswith('.ipynb'):
-                    content = convert_notebook_to_markdown(abs_path)
-                else:
-                    try:
-                        with open(abs_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                    except UnicodeDecodeError:
-                        content = "[Binary file - content not displayed]"
-                        logging.warning(f"File with non-binary extension is binary: {abs_path}")
-                    except Exception as e:
-                        content = f"Error reading file {file_path}: {str(e)}"
-                        logging.error(f"Error reading file on demand: {abs_path} - {e}")
+        if self.current_options and not self.current_options.concatenate and self.local_folder_path:
+            root = os.path.abspath(self.local_folder_path)
+            abs_path = os.path.abspath(os.path.join(root, file_path))
+            try:
+                inside_root = os.path.commonpath([root, abs_path]) == root
+            except ValueError:
+                inside_root = False
+            if not inside_root or os.path.islink(abs_path) or not os.path.isfile(abs_path):
+                return None
+            if file_path.casefold().endswith('.ipynb'):
+                if os.path.getsize(abs_path) > self.current_options.max_file_bytes:
+                    return None
+                content = convert_notebook_to_markdown(abs_path)
+            else:
+                content = read_text_file(abs_path, self.current_options.max_file_bytes)
 
-                if content is not None:
-                    self.file_contents[file_path] = content
-                return content
+            if content is not None:
+                self.file_contents[file_path] = content
+            return content
         return None
 
     def on_tree_item_clicked(self, item, column):
@@ -1275,21 +1289,11 @@ class App(QMainWindow):
         content = self._get_file_content(path)
 
         if content is not None:
-            if self.line_numbers_checkbox.isChecked():
-                lines = content.splitlines()
-                numbered_lines = []
-                line_num = 1
-                for line in lines:
-                    if line.strip():
-                        numbered_lines.append(f"{line_num}: {line}")
-                        line_num += 1
-                    else:
-                        numbered_lines.append(line)
-                content = "\n".join(numbered_lines)
+            content = self._apply_line_numbers(content)
 
             clipboard = QApplication.clipboard()
             clipboard.setText(content)
-            self.show_toast_message(f"Content of {os.path.basename(path)} copied")
+            self.show_toast_message(f"Content of {PurePosixPath(path).name} copied")
         else:
             self.show_message(f"Content not found for {path}")
 
@@ -1305,31 +1309,21 @@ class App(QMainWindow):
         if path and path[0] == "/":
             path = path[1:]
             
-        return os.path.join(*path) if path else ""
+        return "/".join(path) if path else ""
 
     def display_folder_contents(self, folder_path):
-        """Display concatenated contents of all files in a folder."""
-        self.text_display.clear()
-        
+        """Display all descendant files, not only direct children."""
         concatenated_parts = []
-        
-        # In tree-only mode, we might need to load files on demand
-        files_to_process = self.file_positions.keys()
-
-        for file_path in sorted(files_to_process):
-            folder, filename = os.path.split(file_path)
-
-            correct_folder = folder
-            if folder_path == "" and folder == ".": # Root folder special case
-                correct_folder = ""
-
-            if correct_folder == folder_path:
-                content = self._get_file_content(file_path)
-                if content:
-                    concatenated_parts.append(f"\n--{filename}--\n{content}")
+        folder = folder_path.strip("/")
+        for file_path in sorted(self.file_positions):
+            if folder and not file_path.startswith(f"{folder}/"):
+                continue
+            content = self._get_file_content(file_path)
+            if content is not None:
+                concatenated_parts.append(f"--{file_path}--\n{content}")
 
         if concatenated_parts:
-            self.text_display.setPlainText("\n".join(concatenated_parts).lstrip())
+            self.text_display.setPlainText("\n\n".join(concatenated_parts))
         else:
             self.text_display.setPlainText("No text files in this folder.")
 
@@ -1375,14 +1369,14 @@ class App(QMainWindow):
         check_state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
         
         # Use a queue for breadth-first traversal
-        items_to_process = [parent_item]
+        items_to_process = deque([parent_item])
         
         # Disable UI updates during bulk operations
         self.file_tree.setUpdatesEnabled(False)
         
         try:
             while items_to_process:
-                current_item = items_to_process.pop(0)
+                current_item = items_to_process.popleft()
                 
                 # Process all children of the current item
                 for i in range(current_item.childCount()):
@@ -1404,18 +1398,14 @@ class App(QMainWindow):
         
         # Use loop instead of recursion to update parents
         while current is not None:
-            # Count checked and total children
             total_children = current.childCount()
             if total_children == 0:
                 break
-                
-            checked_children = sum(1 for i in range(total_children)
-                                if current.child(i).checkState(0) == Qt.CheckState.Checked)
-            
-            # Update current state based on children
-            if checked_children == 0:
+
+            states = [current.child(i).checkState(0) for i in range(total_children)]
+            if all(state == Qt.CheckState.Unchecked for state in states):
                 current.setCheckState(0, Qt.CheckState.Unchecked)
-            elif checked_children == total_children:
+            elif all(state == Qt.CheckState.Checked for state in states):
                 current.setCheckState(0, Qt.CheckState.Checked)
             else:
                 current.setCheckState(0, Qt.CheckState.PartiallyChecked)
@@ -1457,7 +1447,15 @@ class App(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close event."""
+        if self.analysis_thread is not None and self.analysis_thread.isRunning():
+            self.cancel_analysis()
+            self.show_message("Cancellation was requested. Close the window after the analysis stops.")
+            event.ignore()
+            return
+        self.cancel_search()
         self.save_history()
+        self.settings.setValue("geometry", self.saveGeometry())
+        self.settings.setValue("splitter_state", self.splitter.saveState())
         super().closeEvent(event)
 
     def add_to_history(self, path, is_local):
@@ -1532,12 +1530,12 @@ class App(QMainWindow):
         paths = set()
         root = self.file_tree.invisibleRootItem()
         
-        items_to_process = []
+        items_to_process = deque()
         for i in range(root.childCount()):
             items_to_process.append(root.child(i))
 
         while items_to_process:
-            item = items_to_process.pop(0)
+            item = items_to_process.popleft()
             if item.childCount() == 0 and item.checkState(0) == Qt.CheckState.Checked:
                 paths.add(self.get_item_path(item))
             
@@ -1547,7 +1545,10 @@ class App(QMainWindow):
         return paths
 
     def analyze_source(self):
-        # Determine whether to analyze a remote repo or local folder
+        if self.analysis_thread is not None and self.analysis_thread.isRunning():
+            self.show_message("An analysis is already running.")
+            return
+
         is_local = self.local_radio.isChecked()
 
         if is_local:
@@ -1557,14 +1558,13 @@ class App(QMainWindow):
                 return
             self.add_to_history(source_path, is_local=True)
         else:
-            source_path = self.repo_entry.text()
+            source_path = self.repo_entry.text().strip()
             if not source_path:
                 self.show_error("Please enter a repository URL")
                 return
-            self.add_to_history(source_path, is_local=False)
+            self.add_to_history(self._safe_history_source(source_path), is_local=False)
 
-        # Prepare arguments
-        exclude_folders = self.exclude_folders_entry.text().split() if self.exclude_folders_entry.text() else []
+        exclude_folders = list(self._parse_rules(self.exclude_folders_entry.text()))
         
         if self.ignore_pycache_checkbox.isChecked():
             exclude_folders.extend(['__pycache__', '*/__pycache__', '__pycache__/*', '*/__pycache__/*'])
@@ -1582,32 +1582,68 @@ class App(QMainWindow):
 
         if self.ignore_log_files_checkbox.isChecked():
             exclude_folders.append('*.log')
+        if self.ignore_secret_files_checkbox.isChecked():
+            exclude_folders.extend(['.env', '.env.*', '*.pem', '*.key', 'id_rsa', 'credentials*'])
 
-        args = argparse.Namespace(
-            input=source_path,
-            directories=False,
-            exclude=self.exclude_entry.text().split() if self.exclude_entry.text() else None,
-            include=self.include_entry.text().split() if self.include_entry.text() else None,
-            exclude_folders=exclude_folders,
-            concatenate=not self.only_show_structure,  # Use the structure-only setting
+        try:
+            max_file_bytes = self._parse_size_mib(self.max_file_size_entry.text(), 1)
+            max_total_bytes = self._parse_size_mib(self.max_output_size_entry.text(), 20)
+        except ValueError as error:
+            self.show_error(str(error))
+            return
+
+        options = AnalysisOptions(
+            source_path=source_path,
+            is_local=is_local,
+            include_extensions=self._parse_rules(self.include_entry.text()),
+            exclude_extensions=self._parse_rules(self.exclude_entry.text()),
+            exclude_patterns=tuple(exclude_folders),
+            concatenate=not self.only_structure_checkbox.isChecked(),
             include_git=not self.ignore_git_checkbox.isChecked(),
             include_license=not self.ignore_license_checkbox.isChecked(),
-            exclude_readme=self.ignore_readme_checkbox.isChecked()
+            exclude_readme=self.ignore_readme_checkbox.isChecked(),
+            copy_local_folder=self.copy_local_folder_checkbox.isChecked() if is_local else False,
+            branch=self.branch_entry.text().strip() or None,
+            max_file_bytes=max_file_bytes,
+            max_total_bytes=max_total_bytes,
         )
 
-        # Clear current data
         self.file_contents = {}
-
-        # Run analysis
+        self.file_positions = {}
+        self.file_token_counts = {}
+        self.current_result = None
+        self.current_options = None
+        self.file_tree.clear()
+        self.tree_container.hide()
+        self.refresh_button.hide()
+        self.text_display.setPlainText("Analyzing…")
         try:
-            self.start_analysis(args, is_local)
+            self.start_analysis(options)
         except Exception as e:
             self.show_error(f"An error occurred: {str(e)}")
 
-    def start_analysis(self, args, is_local=False):
-        source_path = args.input
+    @staticmethod
+    def _parse_rules(text):
+        return tuple(rule for rule in re.split(r"[,\s]+", text.strip()) if rule)
 
-        # Create progress dialog
+    @staticmethod
+    def _parse_size_mib(text, default_mib):
+        value = default_mib if not text.strip() else float(text)
+        if value <= 0 or value > 1_024:
+            raise ValueError("Size limits must be greater than 0 and no more than 1024 MiB.")
+        return int(value * 1024 * 1024)
+
+    @staticmethod
+    def _safe_history_source(source):
+        parsed = urlsplit(source)
+        if not parsed.scheme:
+            return source
+        netloc = parsed.hostname or ""
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, ""))
+
+    def start_analysis(self, options):
         self.progress_dialog = QProgressDialog(
             "Analyzing...", "Cancel", 0, 100, self
         )
@@ -1616,24 +1652,30 @@ class App(QMainWindow):
         self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         self.progress_dialog.setMinimumSize(QSize(400, 100))
         
-        # Start analysis thread
         pat = None
-        if not is_local and hasattr(self, 'use_pat_checkbox') and self.use_pat_checkbox.isChecked():
-            pat = self.pat_entry.text()
+        if not options.is_local and self.use_pat_checkbox.isChecked():
+            pat = self.pat_entry.text().strip() or None
 
-        copy_local = self.copy_local_folder_checkbox.isChecked() if is_local else False
-            
-        self.analysis_thread = AnalysisThread(
-            source_path, args, is_local, pat, copy_local
-        )
+        self.pending_options = options
+        self.analysis_thread = AnalysisThread(options, pat)
 
         self.analysis_thread.progress_signal.connect(self.update_progress)
         self.analysis_thread.finished_signal.connect(self.analysis_completed)
         self.analysis_thread.error_signal.connect(self.handle_analysis_error)
+        self.analysis_thread.cancelled_signal.connect(self.handle_analysis_cancelled)
+        self.analysis_thread.finished.connect(self.analysis_thread_finished)
         self.analysis_thread.start()
 
-        self.progress_dialog.canceled.connect(self.analysis_thread.terminate)
+        self.analyze_button.setEnabled(False)
+        self.refresh_button.setEnabled(False)
+        self.progress_dialog.canceled.connect(self.cancel_analysis)
         self.progress_dialog.show()
+
+    def cancel_analysis(self):
+        if self.analysis_thread is not None and self.analysis_thread.isRunning():
+            self.progress_dialog.setLabelText("Cancelling after the current operation…")
+            self.progress_dialog.setCancelButton(None)
+            self.analysis_thread.request_cancel()
 
     def update_progress(self, message, value):
         if self.progress_dialog:
@@ -1641,53 +1683,62 @@ class App(QMainWindow):
             self.progress_dialog.setValue(value)
 
     def handle_analysis_error(self, error_message):
-        if self.progress_dialog:
-            self.progress_dialog.close()
+        self._close_progress_dialog()
+        self.analyze_button.setEnabled(True)
+        self.pending_options = None
+        self.paths_to_restore = None
+        self.refresh_button.setEnabled(self.local_radio.isChecked() and bool(self.file_positions))
         self.show_error(error_message)
 
-    def analysis_completed(self, content, file_positions, file_contents):
-        # Close progress dialog
+    def handle_analysis_cancelled(self):
+        self._close_progress_dialog()
+        self.analyze_button.setEnabled(True)
+        self.pending_options = None
+        self.paths_to_restore = None
+        self.refresh_button.setEnabled(False)
+        self.text_display.setPlainText("Analysis cancelled.")
+
+    def _close_progress_dialog(self):
         if self.progress_dialog:
+            self.progress_dialog.blockSignals(True)
             self.progress_dialog.close()
             self.progress_dialog = None
 
-        # Save folder structure in case we need it later
-        if "Folder structure:" in content:
-            folder_structure_section = content.split("Concatenated content:", 1)[0]
-            self.folder_structure = folder_structure_section.replace("Folder structure:\n", "").strip()
+    def analysis_thread_finished(self):
+        thread = self.sender()
+        if thread is self.analysis_thread:
+            self.analysis_thread = None
 
-        # Update UI
-        if self.only_show_structure:
-            self.text_display.clear()
-            self.text_display.setPlainText("Select a file or folder from the tree to view its content.")
-        else:
-            self.text_display.clear()
-            self.text_display.setPlainText(content)
-        
+    def analysis_completed(self, result):
+        self._close_progress_dialog()
+        self.analyze_button.setEnabled(True)
+        self.current_result = result
+        self.current_options = self.pending_options
+        self.pending_options = None
+        self.folder_structure = result.folder_structure
+        self.text_display.setPlainText(result.full_text)
         self.update_counts()
 
-        # Store file contents for faster access
-        self.file_contents = file_contents
-        self.file_positions = file_positions
+        self.file_contents = result.file_contents
+        self.file_positions = result.file_positions
         self.file_token_counts = {}
 
-        # Update file tree if we have file positions
-        if file_positions:
-            self.update_sidebar(file_positions)
+        if result.file_positions:
+            self.update_sidebar(result.file_positions)
             if hasattr(self, 'paths_to_restore') and self.paths_to_restore:
                 self._restore_checked_items(self.paths_to_restore)
                 self.paths_to_restore = None
             self.tree_container.show()
             if self.local_radio.isChecked():
                 self.refresh_button.show()
+                self.refresh_button.setEnabled(True)
         else:
             self.tree_container.hide()
             self.refresh_button.hide()
 
         self.update_selected_counts()
 
-        # Show success message
-        self.show_message("Analysis completed.")
+        self.show_toast_message("Analysis completed")
 
     def _restore_checked_items(self, paths_to_restore):
         try:
@@ -1733,7 +1784,7 @@ class App(QMainWindow):
 
         # Add all other items
         for path in sorted(file_positions.keys()):
-            parts = path.split(os.sep)
+            parts = path.split("/")
 
             # Handle the case where the path starts with "."
             if parts[0] == '.':
@@ -1795,45 +1846,35 @@ class App(QMainWindow):
         self.tree_container.show()
 
     def copy_selected_files(self):
-        # Get the checked file items from the tree
         checked_files = self.get_checked_items()
-
         if not checked_files:
             self.show_message("No files selected - please check items to copy")
             return
 
-        # Sort by path to ensure a consistent order
-        checked_files.sort(key=lambda x: os.path.join(*x[0]))
-
-        copied_content = []
-        for path_parts, _ in checked_files:
-            # Construct the full path
-            full_path = os.path.join(*path_parts)
-
-            # Get the file content, loading on-demand if necessary
-            content = self._get_file_content(full_path)
-
-            if content is not None:
-                if self.line_numbers_checkbox.isChecked():
-                    lines = content.splitlines()
-                    numbered_lines = []
-                    line_num = 1
-                    for line in lines:
-                        if line.strip():
-                            numbered_lines.append(f"{line_num}: {line}")
-                            line_num += 1
-                        else:
-                            numbered_lines.append(line)
-                    content = "\n".join(numbered_lines)
-                copied_content.append(f"--{path_parts[-1]}--\n{content}")
-
-        if copied_content:
-            full_content = "\n\n".join(copied_content)
+        full_content, copied_count = self._serialize_checked_files(checked_files)
+        if full_content:
             clipboard = QApplication.clipboard()
             clipboard.setText(full_content)
-            self.show_toast_message(f"{len(copied_content)} file(s) copied")
+            self.show_toast_message(f"{copied_count} file(s) copied")
         else:
             self.show_message("No content found for selected files")
+
+    def _apply_line_numbers(self, content):
+        if not self.line_numbers_checkbox.isChecked():
+            return content
+        return "\n".join(
+            f"{line_number}: {line}"
+            for line_number, line in enumerate(content.splitlines(), start=1)
+        )
+
+    def _serialize_checked_files(self, checked_files):
+        copied_content = []
+        for path_parts, _ in sorted(checked_files, key=lambda item: "/".join(item[0])):
+            full_path = "/".join(path_parts)
+            content = self._get_file_content(full_path)
+            if content is not None:
+                copied_content.append(f"--{full_path}--\n{self._apply_line_numbers(content)}")
+        return "\n\n".join(copied_content), len(copied_content)
 
     def get_checked_items(self, parent_item=None):
         checked_files = []
@@ -1866,14 +1907,15 @@ class App(QMainWindow):
 
     def copy_text(self):
         clipboard = QApplication.clipboard()
-        clipboard.setText(self.text_display.toPlainText())
-        self.show_toast_message("All text copied")
+        text = self.current_result.full_text if self.current_result else self.text_display.toPlainText()
+        clipboard.setText(text)
+        self.show_toast_message("Full analysis copied")
 
     def copy_selection(self):
         cursor = self.text_display.textCursor()
         if cursor.hasSelection():
             clipboard = QApplication.clipboard()
-            clipboard.setText(cursor.selectedText())
+            clipboard.setText(cursor.selectedText().replace("\u2029", "\n"))
             self.show_toast_message("Selection copied")
         else:
             self.show_message("No text selected")
@@ -1892,6 +1934,27 @@ class App(QMainWindow):
         clipboard = QApplication.clipboard()
         clipboard.setText(text)
         self.show_toast_message("Visible text copied")
+
+    def save_full_text(self):
+        text = self.current_result.full_text if self.current_result else self.text_display.toPlainText()
+        if not text:
+            self.show_message("No analysis text is available to save.")
+            return
+        destination, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save ChaReCo context",
+            "chareco-context.txt",
+            "Text files (*.txt);;All files (*)",
+        )
+        if not destination:
+            return
+        try:
+            with open(destination, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+        except OSError as error:
+            self.show_error(f"Could not save context: {error}")
+            return
+        self.show_toast_message("Full analysis saved")
 
     def show_toast_message(self, message):
         # Create a semi-transparent notification
@@ -1974,14 +2037,18 @@ class App(QMainWindow):
         msg_box.exec()
 
     def count_tokens(self, text):
+        if self._token_encoding is None:
+            return 0
         try:
-            encoding = tiktoken.encoding_for_model("gpt-4")
-            return len(encoding.encode(text))
+            return len(self._token_encoding.encode(text))
         except Exception as e:
             logging.error(f"Error counting tokens: {str(e)}")
             return 0
 
     def update_counts(self):
+        self._counts_timer.start(150)
+
+    def _recalculate_counts(self):
         text = self.text_display.toPlainText()
         char_count = len(text)
         token_count = self.count_tokens(text)
@@ -2000,14 +2067,12 @@ class App(QMainWindow):
         return 0
 
     def update_selected_counts(self):
+        self._selected_counts_timer.start(100)
+
+    def _recalculate_selected_counts(self):
         checked_files = self.get_checked_items()
-        total_tokens = 0
-        
-        for path_parts, _ in checked_files:
-            full_path = os.path.join(*path_parts)
-            total_tokens += self._get_file_token_count(full_path)
-            
-        self.selected_token_count_label.setText(f"Selected Tokens: {total_tokens}")
+        serialized, _count = self._serialize_checked_files(checked_files)
+        self.selected_token_count_label.setText(f"Selected Tokens: {self.count_tokens(serialized)}")
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():

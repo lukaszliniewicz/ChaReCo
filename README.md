@@ -1,42 +1,35 @@
 # ChaReCo - Chat Repo Context
 
-A GUI and command-line tool to assist with providing chat LLMs with context about code repositories (local or remote) without manual copy-pasting. It outputs the directory structure and selected non-binary file contents, concatenated into a single text file. ChaReCo now includes powerful in-app search, advanced filtering with glob patterns, Jupyter Notebook conversion, and supports analyzing local folders directly.
-
-Processing a lot of code through an API, especially for big proprietary models like Claude Sonnet or Opus (which are the most capable), can get very expensive very fast. The chat interface is much cheaper if one does it a lot. An integration with Github is not always possible and the models can't execute any code or browse the internet (at least Claude can't), which is when this may come in handy.
+A GUI and command-line tool for creating bounded, searchable context from local folders and Git repositories. It produces a deterministic folder tree and selected text-file content for pasting into an LLM chat.
 
 You can view a sample output from the [Pandrator](https://github.com/lukaszliniewicz/Pandrator) repository [here](https://github.com/lukaszliniewicz/LLM_Chat_Repo_Context/blob/main/example_pandrator.txt).
 
 >[!Note]
 >- This tool does not provide direct integration with LLMs.
 >- It's meant to support manual copying and pasting into chat interfaces.
->- It is not meant to replace an IDE but complement it with easy concatenation. 
->- Token counts are estimates and may vary between different LLMs.
+>- It is not an IDE replacement.
+>- Token counts use `cl100k_base` and remain estimates.
+>- Review generated context before sharing it with a third party.
 
 ![image](demonstration.gif)
 
 ## Features
 
-- Analyze Git repositories (public, or private using Personal Access Tokens - PAT) and local folders.
-- Generate customizable folder structure views.
-- Concatenate file contents with smart filtering:
-    - Include/exclude specific file extensions (e.g., `.py,.js` or `*.tmp,*.log`).
-    - Exclude folders using glob patterns (e.g., `**/__pycache__`, `node_modules/*`, `build/`).
-    - Option to ignore `.git` related files, `LICENSE`, or `README` files.
-- Convert Jupyter Notebooks (`.ipynb`) to Markdown for inclusion in the context.
-- In-app content search with options for:
-    - Regular Expressions (Regex)
-    - Case sensitivity
-    - Whole word matching
-- Dynamically select/deselect individual files or entire folders in the tree view to customize the final output.
-- Refresh local folder contents without losing file selections, ensuring you're working with the most up-to-date files.
-- Estimate token counts for the generated output.
-- Improved performance with background processing for analysis and search.
-- Quickly access recent repositories and local folders from a history dropdown.
-- Copy output to clipboard or save to a text file.
+- Analyze public repositories, private GitHub repositories with a PAT, and local folders.
+- Shallow-clone remote repositories and record a manifest with source, revision, and limits.
+- Filter with comma- or space-separated extensions and glob patterns. Notebook files follow the same filters as other files.
+- Prune ignored trees before scanning; skip symlinks, binaries, oversized files, and likely secret files by default.
+- Convert included Jupyter notebooks to Markdown.
+- Bound individual file size and total output size to protect the UI and clipboard.
+- Search loaded content asynchronously with regex, case-sensitive, and whole-word modes. Results are highlighted in the file tree.
+- Select files or folders recursively; copied selections retain relative paths and accurate line numbers.
+- Refresh a local folder without losing selected files.
+- Save the full analysis as a UTF-8 text file directly from the GUI.
+- Use the GUI (`chareco` or `python -m chareco`) or the headless CLI (`chareco-context`).
 
 ## How to Use
 
-There are a few ways to get ChaReCo running:
+ChaReCo requires Python 3.10 or newer.
 
 **1. Download the .exe (Windows)**
    - Head to the [Releases page](https://github.com/lukaszliniewicz/ChaReCo/releases) on GitHub.
@@ -44,18 +37,22 @@ There are a few ways to get ChaReCo running:
    - Run the executable. No installation is required.
 
 **2. Install from GitHub using pip (Recommended for Python users)**
-   - Ensure Git and Python (3.8+) are installed and accessible in your PATH.
+   - Ensure Python 3.10+ is installed and accessible in your PATH.
    - Open your terminal or command prompt and run:
      ```bash
      pip install git+https://github.com/lukaszliniewicz/ChaReCo.git
      ```
-   - Once installed, you should be able to run the GUI using the command:
+    - Run the GUI:
      ```bash
-     chareco
-     ```
+      chareco
+      ```
+    - Or produce context from a terminal:
+      ```bash
+      chareco-context --local /path/to/project --include .py,.md --output context.txt
+      ```
 
 **3. Manual Setup from Cloned Repository**
-   - Ensure Git and Python (3.8+) are installed.
+   - Ensure Git and Python 3.10+ are installed.
    - Clone the repository:
      ```bash
      git clone https://github.com/lukaszliniewicz/ChaReCo.git
@@ -66,30 +63,54 @@ There are a few ways to get ChaReCo running:
      ```
    - Install dependencies:
      ```bash
-     pip install -r requirements.txt
+      pip install -e .
      ```
    - Run the application:
      ```bash
      python run.py
      ```
      
-**Using the Application:**
+**Using the GUI:**
 
 1.  Launch ChaReCo.
-2.  Enter a Git repository URL (for private GitHub repos, you can provide a PAT) or select a local folder path. You can also use the "Load from History" button to quickly select a recent entry.
+2.  Enter a Git repository URL (optionally a branch/tag; a PAT is sent only to exact `https://github.com` URLs and is never stored) or select a local folder path.
 3.  Configure analysis options:
     *   Toggle directory structure, file concatenation.
     *   Set filters for included/excluded file extensions.
-    *   Define glob patterns for excluding specific folders (e.g., `**/__pycache__`, `node_modules/*`).
-    *   Choose whether to include/exclude `.git` related files, `LICENSE`, or `README` files.
-4.  Click "Analyze Repository" or "Analyze Local Folder".
+    *   Define comma- or space-separated glob patterns for excluded folders/files.
+    *   Set file/output limits. The defaults are 1 MiB per file and 20 MiB total.
+4.  Click **Analyze**.
 5.  Once analysis is complete:
     *   View the generated structure and concatenated content.
     *   Use the **Search bar** to find specific text within the loaded files (supports regex, case sensitivity, whole word). Search results will highlight matching files in the tree.
-    *   Select/deselect individual files or entire folders in the tree view to dynamically update the content in the main text area.
+    *   Select/deselect individual files or folders; copying preserves each file's relative path.
     *   For local folders, use the **Refresh** button to reload the folder's contents. Your file selections will be preserved, allowing you to quickly copy the latest versions of your chosen files.
-    *   Copy the selected content to the clipboard or save it to a file.
-6.  Use the generated text output in your LLM chat conversations.
+    *   **All** copies the complete analysis; **Visible** copies the current view.
+6.  Review the generated text, then use it in your LLM chat conversation.
+
+**Using the CLI:**
+
+```bash
+# Local folder
+chareco-context --local ./my-project --include .py,.md --exclude-pattern "**/__pycache__" --output context.txt
+
+# Private GitHub repository; the token stays in the environment, not shell history
+export GITHUB_TOKEN=github_pat_...
+chareco-context https://github.com/org/private-repo.git --branch main --pat-env GITHUB_TOKEN > context.txt
+```
+
+Run `chareco-context --help` for all options.
+
+## Building the Windows executable
+
+From a Windows checkout, install the build extra and create a single-file executable:
+
+```bash
+python -m pip install .[build]
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name ChaReCo --hidden-import jupytext run.py
+```
+
+The executable is written to `dist/ChaReCo.exe`.
 
 ## Use Cases and Examples
 

@@ -1,110 +1,48 @@
-import os
-import tempfile
-import time
+"""Qt wrapper for the pure repository-analysis service."""
+
+from __future__ import annotations
+
 import logging
-import shutil
+
 from PyQt6.QtCore import QThread, pyqtSignal
-from dulwich import porcelain
-from chareco.core.utils import (
-    get_structure, concatenate_files, safe_remove
-)
+
+from chareco.core.models import AnalysisOptions
+from chareco.core.service import AnalysisCancelled, run_analysis
+
+
+logger = logging.getLogger(__name__)
+
 
 class AnalysisThread(QThread):
+    """One cancellable, self-contained analysis job."""
+
     progress_signal = pyqtSignal(str, int)
-    finished_signal = pyqtSignal(str, dict, dict)
+    finished_signal = pyqtSignal(object)
     error_signal = pyqtSignal(str)
+    cancelled_signal = pyqtSignal()
 
-    def __init__(self, source_path, args, is_local=False, pat=None, copy_local_folder=False):
+    def __init__(self, options: AnalysisOptions, pat: str | None = None) -> None:
         super().__init__()
-        self.source_path = source_path
-        self.args = args
-        self.is_local = is_local
-        self.pat = pat
-        self.copy_local_folder = copy_local_folder
+        self.options = options
+        self._pat = pat or None
 
-    def run(self):
-        temp_dir = None
-        folder_path = None
+    def request_cancel(self) -> None:
+        self.requestInterruption()
+
+    def run(self) -> None:
         try:
-            if self.is_local:
-                if self.copy_local_folder:
-                    temp_dir = tempfile.mkdtemp()
-                    source_folder = self.source_path
-                    folder_path = os.path.join(temp_dir, os.path.basename(source_folder.rstrip(os.sep)))
-                    
-                    self.progress_signal.emit("Copying local folder...", 15)
-                    shutil.copytree(source_folder, folder_path, dirs_exist_ok=True)
-                    self.progress_signal.emit("Analyzing copied folder...", 25)
-                else:
-                    folder_path = self.source_path
-                    self.progress_signal.emit("Analyzing local folder...", 25)
-            else:
-                temp_dir = tempfile.mkdtemp()
-                self.progress_signal.emit("Cloning repository...", 25)
-                logging.info(f"Cloning repository: {self.source_path}")
-
-                if self.pat:
-                    if 'github.com' in self.source_path:
-                        repo_url = self.source_path.replace('https://', f'https://{self.pat}@')
-                    else:
-                        repo_url = self.source_path
-                else:
-                    repo_url = self.source_path
-
-                try:
-                    porcelain.clone(repo_url, temp_dir)
-                except Exception as e:
-                    self.error_signal.emit(f"Failed to clone repository: {str(e)}")
-                    safe_remove(temp_dir)
-                    return
-
-                folder_path = temp_dir
-
-            self.progress_signal.emit("Generating folder structure...", 50)
-            logging.info("Generating folder structure")
-            structure = get_structure(
-                folder_path,
-                self.args.directories,
-                self.args.exclude,
-                self.args.include,
-                not self.args.include_git,
-                not self.args.include_license,
-                self.args.exclude_readme,
-                self.args.exclude_folders
+            result = run_analysis(
+                self.options,
+                pat=self._pat,
+                progress=self.progress_signal.emit,
+                is_cancelled=self.isInterruptionRequested,
             )
-
-            content = f"Folder structure:\n{structure}\n"
-            
-            # For remote repos, we must read files since the temp dir will be deleted.
-            should_read_files = self.args.concatenate
-            if not self.is_local:
-                should_read_files = True
-
-            self.progress_signal.emit("Scanning files...", 75)
-            logging.info("Scanning files...")
-            concat_content, file_positions, file_contents = concatenate_files(
-                folder_path,
-                self.args.exclude,
-                self.args.include,
-                not self.args.include_git,
-                not self.args.include_license,
-                self.args.exclude_readme,
-                self.args.exclude_folders,
-                read_files=should_read_files
-            )
-
-            if should_read_files:
-                content += f"\nConcatenated content:\n{concat_content}"
-
-            self.progress_signal.emit("Finalizing results...", 90)
-            self.finished_signal.emit(content, file_positions, file_contents)
-
-        except Exception as e:
-            logging.error(f"An error occurred: {str(e)}")
-            self.error_signal.emit(str(e))
+        except AnalysisCancelled:
+            self.cancelled_signal.emit()
+        except Exception as error:
+            logger.exception("Analysis failed")
+            self.error_signal.emit(str(error))
+        else:
+            self.finished_signal.emit(result)
         finally:
-            if temp_dir:
-                logging.info("Cleaning up temporary directory")
-                safe_remove(temp_dir)
-
-#
+            self._pat = None

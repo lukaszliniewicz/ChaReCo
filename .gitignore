@@ -1,18 +1,24 @@
 # Python bytecode
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
 # Distribution / packaging
 build/
 dist/
 *.egg-info/
 
+# Test and coverage output
+.pytest_cache/
+.coverage
+
 # PyInstaller
 *.spec
 
 # Virtual environments
 .env
-.venv
+.venv/
 env/
 venv/
 
